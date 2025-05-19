@@ -1,83 +1,68 @@
+"""
+Authentication utilities for Contract Management System
+"""
+
 import json
-import os
+import logging
 from functools import wraps
-from werkzeug.exceptions import Unauthorized, Forbidden
-import requests
-from flask import request, jsonify, g
-from jose import jwt
-import six
-from config import Config
+from datetime import datetime, timedelta
+from flask import request, jsonify, current_app
+import jwt
 
-# Auth0 Configuration
-AUTH0_DOMAIN = Config.AUTH0_DOMAIN
-ALGORITHMS = Config.AUTH0_ALGORITHMS
-API_AUDIENCE = Config.AUTH0_API_AUDIENCE
+# Set up logging
+logger = logging.getLogger(__name__)
 
-
-# Format error response and append status code
 def get_token_auth_header():
     """Obtains the Access Token from the Authorization Header"""
-    auth = request.headers.get("Authorization", None)
+    auth = request.headers.get("Authorization", "")
     if not auth:
-        raise Unauthorized("Authorization header is expected")
-
+        return None
+    
     parts = auth.split()
-
+    
     if parts[0].lower() != "bearer":
-        raise Unauthorized("Authorization header must start with Bearer")
+        return None
+    
     elif len(parts) == 1:
-        raise Unauthorized("Token not found")
+        return None
+    
     elif len(parts) > 2:
-        raise Unauthorized("Authorization header must be Bearer token")
-
+        return None
+    
     token = parts[1]
     return token
-
 
 def requires_auth(f):
     """Determines if the Access Token is valid"""
     @wraps(f)
     def decorated(*args, **kwargs):
         token = get_token_auth_header()
-        jsonurl = requests.get(f"https://{AUTH0_DOMAIN}/.well-known/jwks.json")
-        jwks = jsonurl.json()
-        try:
-            unverified_header = jwt.get_unverified_header(token)
-        except Exception:
-            raise Unauthorized("Invalid header. Use an RS256 signed JWT Access Token")
+        if not token:
+            return jsonify({
+                "success": False,
+                "message": "Authorization header is required"
+            }), 401
         
-        rsa_key = {}
-        for key in jwks["keys"]:
-            if key["kid"] == unverified_header["kid"]:
-                rsa_key = {
-                    "kty": key["kty"],
-                    "kid": key["kid"],
-                    "use": key["use"],
-                    "n": key["n"],
-                    "e": key["e"]
-                }
-        if rsa_key:
-            try:
-                payload = jwt.decode(
-                    token,
-                    rsa_key,
-                    algorithms=ALGORITHMS,
-                    audience=API_AUDIENCE,
-                    issuer=f"https://{AUTH0_DOMAIN}/"
-                )
-            except Exception as e:
-                if "Expired token" in str(e):
-                    raise Unauthorized("Token expired")
-                elif "Invalid claim" in str(e):
-                    raise Unauthorized("Incorrect claims. Please check the audience and issuer")
-                else:
-                    raise Unauthorized(f"Unable to parse authentication token: {str(e)}")
-            
-            g.current_user = payload
-            return f(*args, **kwargs)
-        raise Unauthorized("Unable to find appropriate key")
+        try:
+            payload = jwt.decode(
+                token,
+                current_app.config["SECRET_KEY"],
+                algorithms=["HS256"]
+            )
+        except jwt.ExpiredSignatureError:
+            return jsonify({
+                "success": False,
+                "message": "Token has expired"
+            }), 401
+        except Exception:
+            return jsonify({
+                "success": False,
+                "message": "Invalid token"
+            }), 401
+        
+        return f(*args, **kwargs)
+    
     return decorated
-
 
 def requires_role(role):
     """Determines if the user has the required role"""
@@ -85,32 +70,90 @@ def requires_role(role):
         @wraps(f)
         def wrapper(*args, **kwargs):
             token = get_token_auth_header()
-            try:
-                # Use get_unverified_claims to avoid signature verification
-                payload = jwt.get_unverified_claims(token)
-            except Exception:
-                raise Unauthorized("Invalid token")
+            if not token:
+                return jsonify({
+                    "success": False,
+                    "message": "Authorization header is required"
+                }), 401
             
-            # Check if token contains role permissions
-            if 'permissions' not in payload:
-                raise Forbidden("Insufficient permissions")
+            try:
+                payload = jwt.decode(
+                    token,
+                    current_app.config["SECRET_KEY"],
+                    algorithms=["HS256"]
+                )
+            except jwt.ExpiredSignatureError:
+                return jsonify({
+                    "success": False,
+                    "message": "Token has expired"
+                }), 401
+            except Exception:
+                return jsonify({
+                    "success": False,
+                    "message": "Invalid token"
+                }), 401
             
             # Check if user has required role
-            roles = payload.get('permissions', [])
-            if role not in roles:
-                raise Forbidden("Insufficient permissions")
+            user_role = payload.get("role")
+            if not user_role or user_role != role:
+                return jsonify({
+                    "success": False,
+                    "message": f"Role '{role}' is required to access this resource"
+                }), 403
             
             return f(*args, **kwargs)
+        
         return wrapper
+    
     return decorator
-
 
 def get_user_info():
     """Get the current user information from the JWT token"""
     token = get_token_auth_header()
+    if not token:
+        return None
+    
     try:
-        # Use get_unverified_claims to avoid signature verification
-        payload = jwt.get_unverified_claims(token)
+        payload = jwt.decode(
+            token,
+            current_app.config["SECRET_KEY"],
+            algorithms=["HS256"]
+        )
         return payload
-    except Exception:
-        raise Unauthorized("Invalid token")
+    except Exception as e:
+        logger.error(f"Error decoding token: {str(e)}")
+        return None
+
+def generate_token(user_data, expiration=3600):
+    """
+    Generate a JWT token
+    
+    Args:
+        user_data: Dict containing user information
+        expiration: Token expiration time in seconds (default: 1 hour)
+    
+    Returns:
+        str: JWT token
+    """
+    try:
+        # Set token expiration time
+        exp = datetime.utcnow() + timedelta(seconds=expiration)
+        
+        # Create token payload
+        payload = {
+            **user_data,
+            'exp': exp
+        }
+        
+        # Generate token
+        token = jwt.encode(
+            payload,
+            current_app.config['SECRET_KEY'],
+            algorithm='HS256'
+        )
+        
+        return token
+    
+    except Exception as e:
+        logger.error(f"Error generating token: {str(e)}")
+        return None

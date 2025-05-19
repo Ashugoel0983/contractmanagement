@@ -1,35 +1,42 @@
+"""
+Notification Service for Contract Management System
+Handles creating and managing notifications for contracts, users, and system events
+"""
+
 import logging
 from datetime import datetime, timedelta
-from models import Notification, Contract, Invoice, User, NotificationType
-from app import db
 
 logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(self):
-        """Initialize the notification service"""
+        """Initialize notification service"""
         logger.info("Notification service initialized")
-
+    
     def create_notification(self, user_id, message, notification_type, contract_id=None, action_link=None):
         """
         Create a new notification
         Args:
-            user_id: ID of the user
+            user_id: ID of the user to notify
             message: Notification message
-            notification_type: Type of notification (enum value)
-            contract_id: Optional contract ID
-            action_link: Optional action link
+            notification_type: Type of notification (expiry, invoice, approval, system)
+            contract_id: Optional contract ID associated with notification
+            action_link: Optional link for the user to take action
         Returns:
-            Notification: The created notification object
+            dict: Created notification
         """
         try:
+            from app import db
+            from models import Notification, NotificationType
+            
+            # Create notification object
             notification = Notification(
                 user_id=user_id,
-                message=message,
-                type=notification_type,
                 contract_id=contract_id,
-                action_link=action_link,
+                type=getattr(NotificationType, notification_type.upper(), NotificationType.SYSTEM),
+                message=message,
                 is_read=False,
+                action_link=action_link,
                 created_at=datetime.utcnow()
             )
             
@@ -37,38 +44,40 @@ class NotificationService:
             db.session.commit()
             
             logger.info(f"Created notification for user {user_id}: {message}")
-            return notification
-            
+            return notification.to_dict()
+        
         except Exception as e:
-            db.session.rollback()
             logger.error(f"Error creating notification: {str(e)}")
-            raise
-
-    def mark_as_read(self, notification_id, user_id):
+            # Don't raise the exception, as notifications are not critical
+            return None
+    
+    def mark_as_read(self, notification_id):
         """
         Mark a notification as read
         Args:
-            notification_id: ID of the notification
-            user_id: ID of the user
+            notification_id: ID of the notification to mark as read
         Returns:
-            bool: True if successful
+            bool: True if successful, False otherwise
         """
         try:
-            notification = Notification.query.filter_by(id=notification_id, user_id=user_id).first()
+            from app import db
+            from models import Notification
+            
+            notification = Notification.query.get(notification_id)
             if not notification:
-                raise ValueError(f"Notification not found or not owned by user")
+                logger.warning(f"Notification not found: {notification_id}")
+                return False
             
             notification.is_read = True
             db.session.commit()
             
             logger.info(f"Marked notification {notification_id} as read")
             return True
-            
+        
         except Exception as e:
-            db.session.rollback()
             logger.error(f"Error marking notification as read: {str(e)}")
-            raise
-
+            return False
+    
     def mark_all_as_read(self, user_id):
         """
         Mark all notifications for a user as read
@@ -78,111 +87,151 @@ class NotificationService:
             int: Number of notifications marked as read
         """
         try:
-            result = db.session.query(Notification).filter_by(
-                user_id=user_id, is_read=False
-            ).update({Notification.is_read: True})
+            from app import db
+            from models import Notification
+            
+            # Find all unread notifications for the user
+            notifications = Notification.query.filter_by(user_id=user_id, is_read=False).all()
+            
+            # Mark each as read
+            count = 0
+            for notification in notifications:
+                notification.is_read = True
+                count += 1
             
             db.session.commit()
             
-            logger.info(f"Marked {result} notifications as read for user {user_id}")
-            return result
-            
+            logger.info(f"Marked {count} notifications as read for user {user_id}")
+            return count
+        
         except Exception as e:
-            db.session.rollback()
             logger.error(f"Error marking all notifications as read: {str(e)}")
-            raise
-
-    def get_notifications_for_user(self, user_id, notification_type=None, limit=50, offset=0):
+            return 0
+    
+    def get_user_notifications(self, user_id, limit=50, include_read=False):
         """
         Get notifications for a user
         Args:
             user_id: ID of the user
-            notification_type: Optional filter by notification type
-            limit: Max number of notifications to return
-            offset: Offset for pagination
+            limit: Maximum number of notifications to return
+            include_read: Whether to include read notifications
         Returns:
             list: List of notifications
         """
         try:
+            from models import Notification
+            
+            # Query notifications
             query = Notification.query.filter_by(user_id=user_id)
             
-            if notification_type:
-                query = query.filter_by(type=notification_type)
+            if not include_read:
+                query = query.filter_by(is_read=False)
             
-            notifications = query.order_by(Notification.created_at.desc()).limit(limit).offset(offset).all()
+            # Order by created_at descending (newest first)
+            query = query.order_by(Notification.created_at.desc())
             
-            return notifications
+            # Limit the number of results
+            query = query.limit(limit)
             
+            # Execute query
+            notifications = query.all()
+            
+            # Convert to dictionaries
+            result = [notification.to_dict() for notification in notifications]
+            
+            logger.info(f"Retrieved {len(result)} notifications for user {user_id}")
+            return result
+        
         except Exception as e:
-            logger.error(f"Error getting notifications: {str(e)}")
-            raise
-
+            logger.error(f"Error getting user notifications: {str(e)}")
+            return []
+    
+    def delete_notification(self, notification_id):
+        """
+        Delete a notification
+        Args:
+            notification_id: ID of the notification to delete
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            from app import db
+            from models import Notification
+            
+            notification = Notification.query.get(notification_id)
+            if not notification:
+                logger.warning(f"Notification not found: {notification_id}")
+                return False
+            
+            db.session.delete(notification)
+            db.session.commit()
+            
+            logger.info(f"Deleted notification {notification_id}")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Error deleting notification: {str(e)}")
+            return False
+    
     def check_expiring_contracts(self, days_threshold=30):
         """
-        Check for contracts expiring within the threshold and create notifications
+        Check for contracts expiring soon and create notifications
         Args:
-            days_threshold: Days before expiry to send notification
+            days_threshold: Number of days before expiry to create notifications
         Returns:
             int: Number of notifications created
         """
         try:
-            today = datetime.utcnow().date()
-            threshold_date = today + timedelta(days=days_threshold)
+            from app import db
+            from models import Contract, ContractStatus, Notification, NotificationType
             
-            # Find contracts expiring soon
+            # Calculate the date threshold
+            threshold_date = datetime.utcnow() + timedelta(days=days_threshold)
+            
+            # Find active contracts expiring before the threshold
             expiring_contracts = Contract.query.filter(
+                Contract.status == ContractStatus.ACTIVE,
                 Contract.end_date <= threshold_date,
-                Contract.end_date >= today
+                Contract.end_date > datetime.utcnow()
             ).all()
             
-            notification_count = 0
-            
+            count = 0
             for contract in expiring_contracts:
                 # Check if notification already exists
                 existing = Notification.query.filter_by(
                     contract_id=contract.id,
-                    type=NotificationType.EXPIRY
-                ).filter(
-                    Notification.created_at >= datetime.utcnow() - timedelta(days=7)
+                    type=NotificationType.EXPIRY,
+                    is_read=False
                 ).first()
                 
-                if existing:
-                    continue
-                
-                # Find users who should be notified (owner and admins/managers)
-                users_to_notify = [contract.owner]
-                admin_users = User.query.filter(User.role.in_(['admin', 'manager'])).all()
-                users_to_notify.extend(admin_users)
-                
-                # Remove duplicates
-                users_to_notify = list(set(users_to_notify))
-                
-                # Calculate days until expiry
-                days_until_expiry = (contract.end_date - today).days
-                
-                # Create notification for each user
-                for user in users_to_notify:
-                    if not user:
-                        continue
-                        
-                    message = f"Contract Expiring Soon: {contract.title} expires in {days_until_expiry} days"
-                    self.create_notification(
-                        user_id=user.id,
-                        message=message,
-                        notification_type=NotificationType.EXPIRY,
+                if not existing:
+                    # Create new notification
+                    days_remaining = (contract.end_date - datetime.utcnow()).days
+                    message = f"Contract '{contract.title}' is expiring in {days_remaining} days"
+                    
+                    notification = Notification(
+                        user_id=contract.owner_id,
                         contract_id=contract.id,
-                        action_link=f"/contracts/{contract.id}"
+                        type=NotificationType.EXPIRY,
+                        message=message,
+                        is_read=False,
+                        action_link=f"/contracts/{contract.id}",
+                        created_at=datetime.utcnow()
                     )
-                    notification_count += 1
+                    
+                    db.session.add(notification)
+                    count += 1
             
-            logger.info(f"Created {notification_count} contract expiry notifications")
-            return notification_count
+            if count > 0:
+                db.session.commit()
+                logger.info(f"Created {count} contract expiry notifications")
             
+            return count
+        
         except Exception as e:
-            db.session.rollback()
             logger.error(f"Error checking expiring contracts: {str(e)}")
-            raise
-
+            return 0
+    
     def check_overdue_invoices(self):
         """
         Check for overdue invoices and create notifications
@@ -190,110 +239,138 @@ class NotificationService:
             int: Number of notifications created
         """
         try:
-            today = datetime.utcnow().date()
+            from app import db
+            from models import Invoice, Contract, Notification, NotificationType
             
-            # Find overdue invoices
+            # Find invoices that are overdue but not marked as such
             overdue_invoices = Invoice.query.filter(
-                Invoice.status.in_(["sent", "draft"]),
-                Invoice.due_date < today
+                Invoice.status != 'overdue',
+                Invoice.due_date < datetime.utcnow()
             ).all()
             
-            notification_count = 0
-            
+            count = 0
             for invoice in overdue_invoices:
-                # Check if notification already exists
-                existing = Notification.query.filter_by(
-                    contract_id=invoice.contract_id,
-                    type=NotificationType.INVOICE
-                ).filter(
-                    Notification.created_at >= datetime.utcnow() - timedelta(days=2)
-                ).first()
+                # Update invoice status
+                invoice.status = 'overdue'
                 
-                if existing:
-                    continue
-                
-                # Find users who should be notified
+                # Get the contract for the invoice
                 contract = Contract.query.get(invoice.contract_id)
                 if not contract:
                     continue
-                    
-                users_to_notify = [contract.owner]
-                admin_users = User.query.filter(User.role.in_(['admin', 'manager'])).all()
-                users_to_notify.extend(admin_users)
                 
-                # Remove duplicates
-                users_to_notify = list(set(users_to_notify))
+                # Create notification for contract owner
+                message = f"Invoice #{invoice.invoice_number} for contract '{contract.title}' is overdue"
                 
-                # Calculate days overdue
-                days_overdue = (today - invoice.due_date).days
+                notification = Notification(
+                    user_id=contract.owner_id,
+                    contract_id=contract.id,
+                    type=NotificationType.INVOICE,
+                    message=message,
+                    is_read=False,
+                    action_link=f"/invoices/{invoice.id}",
+                    created_at=datetime.utcnow()
+                )
                 
-                # Create notification for each user
-                for user in users_to_notify:
-                    if not user:
-                        continue
-                        
-                    message = f"Invoice Overdue: Payment for {invoice.invoice_number} is {days_overdue} days overdue"
-                    self.create_notification(
-                        user_id=user.id,
-                        message=message,
-                        notification_type=NotificationType.INVOICE,
-                        contract_id=invoice.contract_id,
-                        action_link=f"/invoices/{invoice.id}"
-                    )
-                    notification_count += 1
+                db.session.add(notification)
+                count += 1
             
-            logger.info(f"Created {notification_count} overdue invoice notifications")
-            return notification_count
+            if count > 0:
+                db.session.commit()
+                logger.info(f"Created {count} overdue invoice notifications")
             
+            return count
+        
         except Exception as e:
-            db.session.rollback()
             logger.error(f"Error checking overdue invoices: {str(e)}")
-            raise
-
-    def notify_contract_approval(self, contract_id, status, approver_name):
+            return 0
+    
+    def create_approval_notification(self, approval):
         """
-        Create notification for contract approval status change
+        Create a notification for a new approval request
         Args:
-            contract_id: ID of the contract
-            status: Approval status (approved, rejected)
-            approver_name: Name of the approver
+            approval: The approval object
         Returns:
-            int: Number of notifications created
+            dict: Created notification or None
         """
         try:
-            contract = Contract.query.get(contract_id)
+            from app import db
+            from models import Contract, Notification, NotificationType
+            
+            # Get the contract
+            contract = Contract.query.get(approval.contract_id)
             if not contract:
-                raise ValueError(f"Contract not found: {contract_id}")
+                logger.warning(f"Contract not found for approval: {approval.id}")
+                return None
             
-            # Find users who should be notified
-            users_to_notify = [contract.owner]
-            admin_users = User.query.filter(User.role.in_(['admin', 'manager'])).all()
-            users_to_notify.extend(admin_users)
+            # Create notification message
+            message = f"New approval request for contract '{contract.title}'"
             
-            # Remove duplicates
-            users_to_notify = list(set(users_to_notify))
+            # Create notification for the approver
+            notification = Notification(
+                user_id=approval.approver_id,
+                contract_id=contract.id,
+                type=NotificationType.APPROVAL,
+                message=message,
+                is_read=False,
+                action_link=f"/approvals/{approval.id}",
+                created_at=datetime.utcnow()
+            )
             
-            notification_count = 0
+            db.session.add(notification)
+            db.session.commit()
             
-            # Create notification for each user
-            for user in users_to_notify:
-                if not user:
-                    continue
-                    
-                message = f"Contract {status.capitalize()}: {contract.title} has been {status} by {approver_name}"
-                self.create_notification(
-                    user_id=user.id,
-                    message=message,
-                    notification_type=NotificationType.APPROVAL,
-                    contract_id=contract.id,
-                    action_link=f"/contracts/{contract.id}"
-                )
-                notification_count += 1
-            
-            logger.info(f"Created {notification_count} contract approval notifications")
-            return notification_count
-            
+            logger.info(f"Created approval notification for user {approval.approver_id}")
+            return notification.to_dict()
+        
         except Exception as e:
-            db.session.rollback()
-            logger.error(f"Error creating approval notifications: {str(e)}")
-            raise
+            logger.error(f"Error creating approval notification: {str(e)}")
+            return None
+    
+    def create_approval_status_notification(self, approval):
+        """
+        Create a notification for an approval status change
+        Args:
+            approval: The approval object
+        Returns:
+            dict: Created notification or None
+        """
+        try:
+            from app import db
+            from models import Contract, Notification, NotificationType, ApprovalStatus
+            
+            # Get the contract
+            contract = Contract.query.get(approval.contract_id)
+            if not contract:
+                logger.warning(f"Contract not found for approval: {approval.id}")
+                return None
+            
+            # Only create notifications for approved or rejected statuses
+            if approval.status not in [ApprovalStatus.APPROVED, ApprovalStatus.REJECTED]:
+                return None
+            
+            # Create notification message
+            status_text = "approved" if approval.status == ApprovalStatus.APPROVED else "rejected"
+            message = f"Contract '{contract.title}' has been {status_text}"
+            if approval.comments:
+                message += f". Comments: {approval.comments}"
+            
+            # Create notification for the contract owner
+            notification = Notification(
+                user_id=contract.owner_id,
+                contract_id=contract.id,
+                type=NotificationType.APPROVAL,
+                message=message,
+                is_read=False,
+                action_link=f"/contracts/{contract.id}",
+                created_at=datetime.utcnow()
+            )
+            
+            db.session.add(notification)
+            db.session.commit()
+            
+            logger.info(f"Created approval status notification for user {contract.owner_id}")
+            return notification.to_dict()
+        
+        except Exception as e:
+            logger.error(f"Error creating approval status notification: {str(e)}")
+            return None

@@ -1,75 +1,130 @@
+"""
+OCR Service for Contract Management System
+"""
+
 import os
 import logging
 import pytesseract
 from PIL import Image
 from pdf2image import convert_from_path
+from datetime import datetime
 
+# Set up logging
 logger = logging.getLogger(__name__)
 
 class OCRService:
-    def __init__(self):
-        """Initialize OCR service with pytesseract"""
-        logger.info("OCR Service initialized with pytesseract")
+    """
+    OCR Service for extracting text from documents
+    Uses pytesseract for OCR processing
+    """
     
-    def extract_text_from_pdf(self, file_path):
+    def __init__(self):
+        """Initialize OCR service"""
+        # Check if pytesseract is installed and available
+        try:
+            pytesseract.get_tesseract_version()
+            logger.info("OCR Service initialized with pytesseract")
+        except Exception as e:
+            logger.error(f"Failed to initialize OCR Service: {str(e)}")
+    
+    def _process_image(self, image):
         """
-        Extract text from a PDF document using OCR
+        Process a single image with OCR
+        
         Args:
-            file_path: Path to the PDF file
+            image: PIL Image to process
+            
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Extract text using pytesseract
+            text = pytesseract.image_to_string(image)
+            return text
+        except Exception as e:
+            logger.error(f"OCR processing error: {str(e)}")
+            return ""
+    
+    def _process_pdf(self, file_path):
+        """
+        Process a PDF file with OCR
+        
+        Args:
+            file_path: Path to PDF file
+            
         Returns:
             str: Extracted text
         """
         try:
             # Convert PDF to images
-            logger.debug(f"Converting PDF to images: {file_path}")
-            images = convert_from_path(file_path)
+            pages = convert_from_path(file_path)
             
-            combined_text = ""
+            if not pages:
+                logger.error(f"Failed to convert PDF to images: {file_path}")
+                return ""
             
-            # Process each page
-            for i, image in enumerate(images):
-                logger.debug(f"Processing page {i+1}/{len(images)}")
-                # Extract text from the page
-                image_path = f"{os.path.dirname(file_path)}/temp_page_{i}.jpg"
-                image.save(image_path, 'JPEG')
-                
-                # Use pytesseract to extract text
-                page_text = pytesseract.image_to_string(Image.open(image_path))
-                
-                # Clean up temporary image
-                os.remove(image_path)
-                
-                # Add the page text to the combined text
-                combined_text += f"\n\n--- Page {i+1} ---\n\n{page_text}"
+            # Process each page with OCR
+            texts = []
+            for i, page in enumerate(pages):
+                logger.info(f"Processing page {i+1}/{len(pages)}")
+                text = self._process_image(page)
+                texts.append(text)
             
-            logger.info(f"Successfully extracted text from PDF: {file_path}")
-            return combined_text.strip()
-        
+            # Join all extracted text
+            full_text = "\n\n".join(texts)
+            return full_text
         except Exception as e:
-            logger.error(f"Error extracting text from PDF: {str(e)}")
-            # For demonstration, return sample text if OCR fails
-            logger.warning("Returning sample text due to OCR error")
-            return "SAMPLE CONTRACT\n\nThis Agreement made on [DATE] between [PARTY A] and [PARTY B].\n\n1. TERM: This agreement shall commence on [START DATE] and continue until [END DATE].\n\n2. PAYMENT: Total contract value is $50,000 USD, payable in monthly installments."
+            logger.error(f"Error processing PDF: {str(e)}")
+            return ""
     
-    def extract_text_from_image(self, file_path):
+    def _process_image_file(self, file_path):
         """
-        Extract text from an image using OCR
+        Process an image file with OCR
+        
         Args:
-            file_path: Path to the image file
+            file_path: Path to image file
+            
         Returns:
             str: Extracted text
         """
         try:
-            logger.debug(f"Processing image: {file_path}")
+            # Open image file
+            image = Image.open(file_path)
             
-            # Use pytesseract to extract text
-            text = pytesseract.image_to_string(Image.open(file_path))
-            
-            logger.info(f"Successfully extracted text from image: {file_path}")
+            # Process image with OCR
+            text = self._process_image(image)
             return text
-        
         except Exception as e:
-            logger.error(f"Error extracting text from image: {str(e)}")
-            # For demonstration, return sample text if OCR fails
-            logger.warning("Returning sample text due to OCR error")
-            return "SAMPLE CONTRACT\n\nThis Agreement made on [DATE] between [PARTY A] and [PARTY B].\n\n1. TERM: This agreement shall commence on [START DATE] and continue until [END DATE].\n\n2. PAYMENT: Total contract value is $50,000 USD, payable in monthly installments."
+            logger.error(f"Error processing image file: {str(e)}")
+            return ""
+    
+    def extract_text(self, file_path):
+        """
+        Extract text from a document file
+        
+        Args:
+            file_path: Path to document file (PDF or image)
+            
+        Returns:
+            str: Extracted text
+        """
+        try:
+            # Check if file exists
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                return ""
+            
+            # Get file extension
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
+            # Process file based on extension
+            if file_ext == '.pdf':
+                return self._process_pdf(file_path)
+            elif file_ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+                return self._process_image_file(file_path)
+            else:
+                logger.error(f"Unsupported file type: {file_ext}")
+                return ""
+        except Exception as e:
+            logger.error(f"Error extracting text: {str(e)}")
+            return ""

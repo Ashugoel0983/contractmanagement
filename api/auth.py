@@ -2,205 +2,266 @@
 Authentication API endpoints for Contract Management System
 """
 
-import os
 import logging
-import json
-import requests
-from flask import Blueprint, request, jsonify, current_app, g
+import re
+from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_cors import cross_origin
-from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime, timedelta
-import jwt
+import requests
 
 from app import db
 from models import User, UserRole
-from auth import get_token_auth_header, requires_auth
+from auth import generate_token
 
-# Configure logging
+# Set up logging
 logger = logging.getLogger(__name__)
 
-# Create authentication blueprint
+# Create blueprint
 auth_bp = Blueprint('auth', __name__)
 
 @auth_bp.route('/login', methods=['POST'])
-@cross_origin(supports_credentials=True)
 def login():
     """
     Login endpoint for email/password authentication
+    
+    Request:
+        - email: User email
+        - password: User password
+        
+    Returns:
+        JSON response with login status and token
     """
     try:
-        # Get login data
+        # Get request data
         data = request.get_json()
+        
         if not data:
             return jsonify({
                 'success': False,
-                'error': 'Missing request body'
+                'message': 'No data provided'
             }), 400
-            
-        email = data.get('email')
-        password = data.get('password')
         
-        if not email or not password:
+        # Validate required fields
+        required_fields = ['email', 'password']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'message': f'Missing required field: {field}'
+                }), 400
+        
+        # Validate email format
+        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_regex, data['email']):
             return jsonify({
                 'success': False,
-                'error': 'Missing email or password'
+                'message': 'Invalid email format'
             }), 400
-            
+        
         # Find user by email
-        user = User.query.filter_by(email=email).first()
+        user = User.query.filter_by(email=data['email']).first()
         
         if not user:
             return jsonify({
                 'success': False,
-                'error': 'Invalid email or password'
-            }), 401
-            
-        # Check password
-        if not check_password_hash(user.password_hash, password):
+                'message': 'User not found'
+            }), 404
+        
+        # Check if user is active
+        if not user.is_active:
             return jsonify({
                 'success': False,
-                'error': 'Invalid email or password'
+                'message': 'Account is inactive'
+            }), 403
+        
+        # Check password
+        if not check_password_hash(user.password_hash, data['password']):
+            return jsonify({
+                'success': False,
+                'message': 'Invalid password'
             }), 401
-            
-        # Generate JWT token
-        payload = {
-            'sub': user.auth0_id or str(user.id),
+        
+        # Generate token
+        user_data = {
+            'sub': user.id,
             'email': user.email,
             'name': user.name,
-            'role': user.role.value if hasattr(user.role, 'value') else user.role,
-            'exp': datetime.utcnow() + timedelta(hours=24)
+            'role': user.role.value
         }
         
-        token = jwt.encode(
-            payload,
-            current_app.config.get('SECRET_KEY'),
-            algorithm='HS256'
-        )
+        token = generate_token(user_data)
         
+        if not token:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to generate token'
+            }), 500
+        
+        # Return success response
         return jsonify({
             'success': True,
+            'message': 'Login successful',
             'token': token,
-            'user': user.to_dict()
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'name': user.name,
+                'role': user.role.value
+            }
         }), 200
-        
+    
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
         return jsonify({
             'success': False,
-            'error': 'An error occurred during login'
+            'message': f'Login failed: {str(e)}'
         }), 500
 
-
 @auth_bp.route('/signup', methods=['POST'])
-@cross_origin(supports_credentials=True)
 def signup():
     """
     Signup endpoint for creating new accounts
+    
+    Request:
+        - email: User email
+        - password: User password
+        - name: User name
+        
+    Returns:
+        JSON response with signup status and token
     """
     try:
-        # Get signup data
+        # Get request data
         data = request.get_json()
+        
         if not data:
             return jsonify({
                 'success': False,
-                'error': 'Missing request body'
+                'message': 'No data provided'
             }), 400
-            
-        email = data.get('email')
-        password = data.get('password')
-        name = data.get('name', '')
         
-        if not email or not password:
+        # Validate required fields
+        required_fields = ['email', 'password', 'name']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'message': f'Missing required field: {field}'
+                }), 400
+        
+        # Validate email format
+        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_regex, data['email']):
             return jsonify({
                 'success': False,
-                'error': 'Missing email or password'
+                'message': 'Invalid email format'
             }), 400
-            
+        
+        # Validate password strength
+        if len(data['password']) < 8:
+            return jsonify({
+                'success': False,
+                'message': 'Password must be at least 8 characters long'
+            }), 400
+        
         # Check if user already exists
-        existing_user = User.query.filter_by(email=email).first()
+        existing_user = User.query.filter_by(email=data['email']).first()
+        
         if existing_user:
             return jsonify({
                 'success': False,
-                'error': 'User with this email already exists'
+                'message': 'Email already in use'
             }), 409
-            
+        
         # Create new user
         new_user = User()
-        new_user.email = email
-        new_user.name = name
+        new_user.email = data['email']
+        new_user.name = data['name']
+        new_user.password_hash = generate_password_hash(data['password'])
         new_user.role = UserRole.USER
-        new_user.password_hash = generate_password_hash(password)
+        new_user.auth0_id = f"local|{data['email']}"
+        new_user.is_active = True
         
-        # Generate a local auth0_id if using local auth
-        new_user.auth0_id = f"local|{email}"
-        
-        # Add user to database
+        # Add and commit to database
         db.session.add(new_user)
         db.session.commit()
         
-        # Generate JWT token
-        payload = {
-            'sub': new_user.auth0_id,
+        # Generate token
+        user_data = {
+            'sub': new_user.id,
             'email': new_user.email,
             'name': new_user.name,
-            'role': new_user.role.value if hasattr(new_user.role, 'value') else new_user.role,
-            'exp': datetime.utcnow() + timedelta(hours=24)
+            'role': new_user.role.value
         }
         
-        token = jwt.encode(
-            payload,
-            current_app.config.get('SECRET_KEY'),
-            algorithm='HS256'
-        )
+        token = generate_token(user_data)
         
+        if not token:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to generate token'
+            }), 500
+        
+        # Return success response
         return jsonify({
             'success': True,
+            'message': 'Signup successful',
             'token': token,
-            'user': new_user.to_dict()
+            'user': {
+                'id': new_user.id,
+                'email': new_user.email,
+                'name': new_user.name,
+                'role': new_user.role.value
+            }
         }), 201
-        
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        logger.error(f"Database error during signup: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': 'Database error during signup'
-        }), 500
+    
     except Exception as e:
+        # Rollback on error
+        db.session.rollback()
+        
         logger.error(f"Signup error: {str(e)}")
         return jsonify({
             'success': False,
-            'error': 'An error occurred during signup'
+            'message': f'Signup failed: {str(e)}'
         }), 500
 
-
 @auth_bp.route('/social-login', methods=['POST'])
-@cross_origin(supports_credentials=True)
 def social_login():
     """
     Social login endpoint for Google and Microsoft authentication
+    
+    Request:
+        - provider: Authentication provider (google, microsoft)
+        - token: OAuth token from provider
+        
+    Returns:
+        JSON response with login status and token
     """
     try:
-        # Get token from social login
+        # Get request data
         data = request.get_json()
+        
         if not data:
             return jsonify({
                 'success': False,
-                'error': 'Missing request body'
+                'message': 'No data provided'
             }), 400
-            
-        provider = data.get('provider')  # 'google' or 'microsoft'
-        token = data.get('token')
         
-        if not provider or not token:
-            return jsonify({
-                'success': False,
-                'error': 'Missing provider or token'
-            }), 400
-            
-        # Verify token with the provider
+        # Validate required fields
+        required_fields = ['provider', 'token']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'message': f'Missing required field: {field}'
+                }), 400
+        
+        # Get provider and token
+        provider = data['provider'].lower()
+        token = data['token']
+        
+        # Verify token with provider
         user_info = None
+        
         if provider == 'google':
             user_info = verify_google_token(token)
         elif provider == 'microsoft':
@@ -208,151 +269,193 @@ def social_login():
         else:
             return jsonify({
                 'success': False,
-                'error': 'Invalid provider'
+                'message': f'Unsupported provider: {provider}'
             }), 400
-            
-        if not user_info or 'email' not in user_info:
-            return jsonify({
-                'success': False, 
-                'error': 'Invalid token'
-            }), 401
-            
-        # Find or create user
-        email = user_info['email']
-        name = user_info.get('name', '')
-        provider_id = user_info.get('sub') or user_info.get('id')
-        auth0_id = f"{provider}|{provider_id}"
         
-        user = User.query.filter_by(email=email).first()
+        if not user_info:
+            return jsonify({
+                'success': False,
+                'message': f'Failed to verify {provider} token'
+            }), 401
+        
+        # Get or create user
+        auth_id = f"{provider}|{user_info['sub']}"
+        user = User.query.filter_by(auth0_id=auth_id).first()
         
         if not user:
-            # Create new user
-            user = User()
-            user.email = email
-            user.name = name
-            user.role = UserRole.USER
-            user.auth0_id = auth0_id
-            db.session.add(user)
-            db.session.commit()
-        else:
-            # Update existing user with provider info if needed
-            if not user.auth0_id:
-                user.auth0_id = auth0_id
+            # Check if email is already in use
+            existing_user = User.query.filter_by(email=user_info['email']).first()
+            
+            if existing_user:
+                # Link existing account to social provider
+                existing_user.auth0_id = auth_id
                 db.session.commit()
+                user = existing_user
+            else:
+                # Create new user
+                user = User()
+                user.auth0_id = auth_id
+                user.email = user_info['email']
+                user.name = user_info['name']
+                user.role = UserRole.USER
+                user.is_active = True
                 
-        # Generate JWT token
-        payload = {
-            'sub': user.auth0_id,
+                db.session.add(user)
+                db.session.commit()
+        
+        # Generate token
+        user_data = {
+            'sub': user.id,
             'email': user.email,
             'name': user.name,
-            'role': user.role.value if hasattr(user.role, 'value') else user.role,
-            'exp': datetime.utcnow() + timedelta(hours=24)
+            'role': user.role.value
         }
         
-        token = jwt.encode(
-            payload,
-            current_app.config.get('SECRET_KEY'),
-            algorithm='HS256'
-        )
+        jwt_token = generate_token(user_data)
         
+        if not jwt_token:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to generate token'
+            }), 500
+        
+        # Return success response
         return jsonify({
             'success': True,
-            'token': token,
-            'user': user.to_dict()
+            'message': f'{provider.capitalize()} login successful',
+            'token': jwt_token,
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'name': user.name,
+                'role': user.role.value
+            }
         }), 200
-        
+    
     except Exception as e:
+        # Rollback on error
+        db.session.rollback()
+        
         logger.error(f"Social login error: {str(e)}")
         return jsonify({
             'success': False,
-            'error': 'An error occurred during social login'
+            'message': f'Social login failed: {str(e)}'
         }), 500
 
-
-@auth_bp.route('/me', methods=['GET'])
-@cross_origin(supports_credentials=True)
-@requires_auth
+@auth_bp.route('/profile', methods=['GET'])
 def get_user_profile():
-    """Get current user profile"""
-    try:
-        # User info should be in g.current_user from requires_auth decorator
-        user_id = g.current_user.get('sub')
-        
-        # Extract user ID from auth0_id if needed
-        if '|' in user_id:
-            user_id = user_id.split('|')[1]
+    """
+    Get current user profile
+    
+    Returns:
+        JSON response with user profile
+    """
+    from auth import requires_auth, get_user_info
+    
+    @requires_auth
+    def get_profile():
+        try:
+            # Get user info from token
+            user_info = get_user_info()
             
-        # Get user from database
-        user = User.query.filter(
-            (User.auth0_id == g.current_user.get('sub')) | 
-            (User.id == user_id)
-        ).first()
+            if not user_info:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to get user information'
+                }), 500
+            
+            # Get user ID from token
+            user_id = user_info.get('sub')
+            
+            # Get user from database
+            user = User.query.get(user_id)
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'message': 'User not found'
+                }), 404
+            
+            # Return user profile
+            return jsonify({
+                'success': True,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'name': user.name,
+                    'role': user.role.value
+                }
+            }), 200
         
-        if not user:
+        except Exception as e:
+            logger.error(f"Get profile error: {str(e)}")
             return jsonify({
                 'success': False,
-                'error': 'User not found'
-            }), 404
-            
-        return jsonify({
-            'success': True,
-            'user': user.to_dict()
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error getting user profile: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': 'An error occurred while retrieving user profile'
-        }), 500
-
+                'message': f'Failed to get profile: {str(e)}'
+            }), 500
+    
+    return get_profile()
 
 @auth_bp.route('/forgot-password', methods=['POST'])
-@cross_origin(supports_credentials=True)
 def forgot_password():
     """
     Forgot password endpoint to send password reset email
+    
+    Request:
+        - email: User email
+        
+    Returns:
+        JSON response with status
     """
     try:
-        # Get email from request
+        # Get request data
         data = request.get_json()
-        if not data or 'email' not in data:
+        
+        if not data:
             return jsonify({
                 'success': False,
-                'error': 'Email address is required'
+                'message': 'No data provided'
             }), 400
-            
-        email = data.get('email')
         
-        # Check if user exists
-        user = User.query.filter_by(email=email).first()
+        # Validate required fields
+        if 'email' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Email is required'
+            }), 400
+        
+        # Validate email format
+        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_regex, data['email']):
+            return jsonify({
+                'success': False,
+                'message': 'Invalid email format'
+            }), 400
+        
+        # Find user by email
+        user = User.query.filter_by(email=data['email']).first()
+        
         if not user:
-            # We don't want to reveal whether a user exists or not
+            # Don't reveal that the user doesn't exist
             return jsonify({
                 'success': True,
-                'message': 'If your email is registered, you will receive a password reset link'
+                'message': 'If the email exists, a password reset link will be sent'
             }), 200
-            
-        # In a real implementation, you would:
-        # 1. Generate a secure reset token
-        # 2. Store it in the database with an expiry
-        # 3. Send an email with a reset link
         
-        # For now, we'll just simulate success
-        logger.info(f"Password reset requested for {email}")
+        # In a real application, send password reset email here
+        # For now, just return success
         
         return jsonify({
             'success': True,
-            'message': 'If your email is registered, you will receive a password reset link'
+            'message': 'If the email exists, a password reset link will be sent'
         }), 200
-        
+    
     except Exception as e:
         logger.error(f"Forgot password error: {str(e)}")
         return jsonify({
             'success': False,
-            'error': 'An error occurred processing your request'
+            'message': f'Failed to process request: {str(e)}'
         }), 500
-
 
 def verify_google_token(token):
     """
@@ -360,18 +463,38 @@ def verify_google_token(token):
     Returns user info if valid, None if invalid
     """
     try:
-        # Google's token info endpoint
-        response = requests.get(f'https://oauth2.googleapis.com/tokeninfo?id_token={token}')
+        # Google token info endpoint
+        response = requests.get(
+            f'https://oauth2.googleapis.com/tokeninfo?id_token={token}'
+        )
         
         if response.status_code != 200:
             logger.error(f"Google token verification failed: {response.text}")
             return None
-            
-        return response.json()
+        
+        # Get user info
+        user_info = response.json()
+        
+        # Verify issuer
+        if user_info.get('iss') not in ['accounts.google.com', 'https://accounts.google.com']:
+            logger.error(f"Invalid token issuer: {user_info.get('iss')}")
+            return None
+        
+        # Verify email
+        if not user_info.get('email_verified', False):
+            logger.error("Email not verified by Google")
+            return None
+        
+        # Return user info
+        return {
+            'sub': user_info.get('sub'),
+            'email': user_info.get('email'),
+            'name': user_info.get('name', '')
+        }
+    
     except Exception as e:
         logger.error(f"Error verifying Google token: {str(e)}")
         return None
-
 
 def verify_microsoft_token(token):
     """
@@ -380,18 +503,25 @@ def verify_microsoft_token(token):
     """
     try:
         # Microsoft Graph API endpoint
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
-        
-        response = requests.get('https://graph.microsoft.com/v1.0/me', headers=headers)
+        response = requests.get(
+            'https://graph.microsoft.com/v1.0/me',
+            headers={'Authorization': f'Bearer {token}'}
+        )
         
         if response.status_code != 200:
             logger.error(f"Microsoft token verification failed: {response.text}")
             return None
-            
-        return response.json()
+        
+        # Get user info
+        user_info = response.json()
+        
+        # Return user info
+        return {
+            'sub': user_info.get('id'),
+            'email': user_info.get('userPrincipalName'),
+            'name': user_info.get('displayName', '')
+        }
+    
     except Exception as e:
         logger.error(f"Error verifying Microsoft token: {str(e)}")
         return None

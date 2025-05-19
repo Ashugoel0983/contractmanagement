@@ -25,6 +25,11 @@ app = Flask(__name__)
 app.config.from_object('config.Config')
 app.secret_key = os.environ.get("SESSION_SECRET", os.urandom(24))
 
+# Set up upload folder and allowed extensions
+app.config['UPLOAD_FOLDER'] = os.environ.get("UPLOAD_FOLDER", "uploads")
+app.config['ALLOWED_EXTENSIONS'] = {'pdf', 'png', 'jpg', 'jpeg', 'tiff', 'tif'}
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max upload size
+
 # Enable CORS
 CORS(app, supports_credentials=True)
 
@@ -34,35 +39,36 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 # Initialize the database with the app
 db.init_app(app)
 
+# Initialize services for global use
+from services.storage_service import StorageService
+from services.ocr_service import OCRService
+from services.ai_service import AIService
+
+storage_service = StorageService()
+ocr_service = OCRService()
+ai_service = AIService()
+
 # Import and register API blueprints
 with app.app_context():
     # Import models for table creation
     from models import User, Contract, ContractParty, ContractMetadata, Invoice, Approval, Notification
 
     # Import API blueprints
-    from api.contracts import contracts_bp
-    from api.users import users_bp
-    from api.ai import ai_bp
-    from api.invoices import invoices_bp
-    from api.approvals import approvals_bp
-    from api.notifications import notifications_bp
-    from api.settings import settings_bp
-    from api.search import search_bp
     from api.auth import auth_bp
-
+    from api.uploads import upload_bp
+    from api.contracts import contracts_bp
+    
     # Register API blueprints
-    app.register_blueprint(contracts_bp, url_prefix='/v1/contracts')
-    app.register_blueprint(users_bp, url_prefix='/v1/users')
-    app.register_blueprint(ai_bp, url_prefix='/v1/ai')
-    app.register_blueprint(invoices_bp, url_prefix='/v1/invoices')
-    app.register_blueprint(approvals_bp, url_prefix='/v1/approvals')
-    app.register_blueprint(notifications_bp, url_prefix='/v1/notifications')
-    app.register_blueprint(settings_bp, url_prefix='/v1/settings')
-    app.register_blueprint(search_bp, url_prefix='/v1/contracts/search')
     app.register_blueprint(auth_bp, url_prefix='/v1/auth')
+    app.register_blueprint(upload_bp, url_prefix='/v1/uploads')
+    app.register_blueprint(contracts_bp, url_prefix='/v1/contracts')
 
     # Create all database tables
     db.create_all()
+
+    # Ensure upload directory exists
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
 
 # Health check endpoint
 @app.route('/v1/health', methods=['GET'])
@@ -70,4 +76,4 @@ def health_check():
     return {'status': 'healthy'}, 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
