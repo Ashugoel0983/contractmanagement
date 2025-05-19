@@ -1,0 +1,209 @@
+**📘 Final API Integration Document: AI-Powered Contract Management System**
+
+---
+
+### 🔧 Backend Stack
+
+* **Framework:** Python Flask
+* **Authentication:** Auth0 (JWT RS256)
+* **OCR Engine:** PaddleOCR
+* **AI Model:** OpenAI / Gemini (LLM)
+* **Storage:** Local or S3-compatible
+* **Database:** PostgreSQL / MySQL (via SQLAlchemy)
+
+---
+
+## 🔐 Authentication (via Auth0)
+
+* Frontend initiates login with Auth0
+* User receives JWT Access Token
+* Flask backend verifies JWT using Auth0's JWKS
+* Roles: `admin`, `manager`, `user`
+
+---
+
+## 🧑‍💼 User Roles & Permissions
+
+| Role    | Description                 |
+| ------- | --------------------------- |
+| Admin   | Full Access                 |
+| Manager | Moderate Access (no delete) |
+| User    | View-only                   |
+
+---
+
+## 📁 API Base URL
+
+```
+https://api.febi.com/v1/
+```
+
+---
+
+## 📂 Authentication (Frontend only)
+
+Handled via Auth0 SPA SDK
+
+* Login via Hosted Page
+* JWT sent via: `Authorization: Bearer <token>`
+
+---
+
+## 👥 User Management (Admin Only)
+
+| Endpoint      | Method | Auth Role | Description      |
+| ------------- | ------ | --------- | ---------------- |
+| `/users`      | GET    | Admin     | List all users   |
+| `/users`      | POST   | Admin     | Create new user  |
+| `/users/<id>` | PATCH  | Admin     | Update user info |
+| `/users/<id>` | DELETE | Admin     | Soft delete user |
+
+---
+
+## 📄 Contract Management
+
+| Endpoint                    | Method | Auth Role      | Description                   |
+| --------------------------- | ------ | -------------- | ----------------------------- |
+| `/contracts`                | GET    | All            | List all contracts            |
+| `/contracts`                | POST   | Admin, Manager | Upload contract               |
+| `/contracts/<id>`           | GET    | All            | View contract details         |
+| `/contracts/<id>`           | PUT    | Admin, Manager | Update contract metadata      |
+| `/contracts/<id>`           | DELETE | Admin          | Delete contract               |
+| `/contracts/<id>/extract`   | POST   | Admin, Manager | Trigger AI-based extraction   |
+| `/contracts/<id>/extracted` | GET    | All            | Get structured extracted data |
+
+**Metadata Fields (Used in Forms and AI):**
+
+* Contract Type
+* Contract Title
+* Parties Involved
+* Contract Number
+* Start Date / End Date
+* Value
+* Payment Terms
+* Clauses (Termination, Confidentiality, Indemnity, Jurisdiction)
+* Risk Flags
+* Document Upload Info
+
+---
+
+## 🤖 AI Extraction (OCR + LLM)
+
+| Endpoint      | Method | Auth Role      | Description                         |
+| ------------- | ------ | -------------- | ----------------------------------- |
+| `/ai/extract` | POST   | Admin, Manager | Upload file, return structured JSON |
+
+**Input:** Multipart Form
+
+* `file` (PDF / Image)
+* `doc_type` (invoice, contract, etc)
+
+**Process:**
+
+1. PaddleOCR extracts raw text
+2. AI model returns structured JSON fields
+3. JSON returned for UI mapping
+
+**Example Response:**
+
+```json
+{
+  "contract_title": "Consulting Agreement",
+  "contract_type": "Vendor",
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31",
+  "parties": ["ABC Pvt Ltd", "XYZ Corp"],
+  "payment_terms": "Net 30",
+  "total_value": 50000,
+  "risk_flags": ["Missing jurisdiction clause"]
+}
+```
+
+---
+
+## 🧾 Invoice Management
+
+| Endpoint                    | Method | Auth Role      | Description                    |
+| --------------------------- | ------ | -------------- | ------------------------------ |
+| `/invoices`                 | GET    | All            | List all invoices              |
+| `/invoices/configure`       | POST   | Admin, Manager | Configure invoice for contract |
+| `/invoices/<id>`            | GET    | All            | View invoice details (PDF URL) |
+| `/invoices/<id>/regenerate` | PUT    | Admin, Manager | Regenerate invoice PDF         |
+
+**Invoice Config Fields:**
+
+* Contract ID
+* Recurring (true/false)
+* Frequency (monthly/quarterly)
+* Amount
+* Start Date / End Date
+* Invoice Template
+
+---
+
+## ✅ Approval Workflow
+
+| Endpoint                           | Method | Auth Role      | Description                  |
+| ---------------------------------- | ------ | -------------- | ---------------------------- |
+| `/approvals/pending`               | GET    | Manager, Admin | Contracts pending approval   |
+| `/approvals/<contract_id>/approve` | POST   | Manager, Admin | Approve contract             |
+| `/approvals/<contract_id>/reject`  | POST   | Manager, Admin | Reject contract with remarks |
+
+**Approval Logic:**
+
+* Level 1: up to 50,000
+* Level 2: 50,001 to 100,000
+* Level 3: 100,001 to 500,000
+* Level 4: Above 500,000
+
+---
+
+## 🔎 Search & Repository
+
+| Endpoint            | Method | Auth Role | Description                 |
+| ------------------- | ------ | --------- | --------------------------- |
+| `/contracts/search` | GET    | All       | Filter by type, party, tags |
+
+**Filters:**
+
+* Type, Owner, Status, Expiry, Risk Flag
+
+---
+
+## 🔔 Notifications
+
+| Endpoint         | Method | Auth Role | Description             |
+| ---------------- | ------ | --------- | ----------------------- |
+| `/notifications` | GET    | All       | View alerts & approvals |
+
+---
+
+## ⚙️ Settings (Admin Only)
+
+| Endpoint          | Method | Auth Role | Description             |
+| ----------------- | ------ | --------- | ----------------------- |
+| `/settings/roles` | GET    | Admin     | View role access matrix |
+| `/settings/roles` | PUT    | Admin     | Update role matrix      |
+
+---
+
+## 📋 Status & Utilities
+
+| Endpoint  | Method | Auth Role | Description         |
+| --------- | ------ | --------- | ------------------- |
+| `/health` | GET    | Public    | API status check    |
+| `/me`     | GET    | All       | Logged-in user info |
+
+---
+
+## 📌 Notes
+
+* All endpoints require JWT token via Auth0
+* Role-based access enforced using decorators
+* Uploads stored securely; JSON logs retained
+* Versioning can be added via `/v1/`
+
+---
+
+**✅ Ready for Implementation.**
+Let me know if you want code scaffolding next.
