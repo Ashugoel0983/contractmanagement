@@ -1,0 +1,92 @@
+Traceback (most recent call last):
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 137, in _compiler_dispatch
+    meth = getter(visitor)
+           ^^^^^^^^^^^^^^^
+AttributeError: 'MySQLTypeCompiler' object has no attribute 'visit_ARRAY'. Did you mean: 'visit_REAL'?
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 6716, in visit_create_table
+    processed = self.process(
+                ^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 932, in process
+    return obj._compiler_dispatch(self, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 141, in _compiler_dispatch
+    return meth(self, **kw)  # type: ignore  # noqa: E501
+           ^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 6747, in visit_create_column
+    text = self.get_column_specification(column, first_pk=first_pk)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/dialects/mysql/base.py", line 1888, in get_column_specification
+    self.dialect.type_compiler_instance.process(
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 977, in process
+    return type_._compiler_dispatch(self, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 139, in _compiler_dispatch
+    return visitor.visit_unsupported_compilation(self, err, **kw)  # type: ignore  # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 982, in visit_unsupported_compilation
+    raise exc.UnsupportedCompilationError(self, element) from err
+sqlalchemy.exc.UnsupportedCompilationError: Compiler <sqlalchemy.dialects.mysql.base.MySQLTypeCompiler object at 0x11233ebd0> can't render element of type ARRAY (Background on this error at: https://sqlalche.me/e/20/l7de)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/main.py", line 1, in <module>
+    from app import app
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/app.py", line 63, in <module>
+    db.create_all()
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/flask_sqlalchemy/extension.py", line 900, in create_all
+    self._call_for_binds(bind_key, "create_all")
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/flask_sqlalchemy/extension.py", line 881, in _call_for_binds
+    getattr(metadata, op_name)(bind=engine)
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 5924, in create_all
+    bind._run_ddl_visitor(
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3248, in _run_ddl_visitor
+    conn._run_ddl_visitor(visitorcallable, element, **kwargs)
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2455, in _run_ddl_visitor
+    ).traverse_single(element)
+      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 664, in traverse_single
+    return meth(obj, **kw)
+           ^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 982, in visit_metadata
+    self.traverse_single(
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 664, in traverse_single
+    return meth(obj, **kw)
+           ^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 1020, in visit_table
+    )._invoke_with(self.connection)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 321, in _invoke_with
+    return bind.execute(self)
+           ^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1415, in execute
+    return meth(
+           ^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 187, in _execute_on_connection
+    return connection._execute_ddl(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1523, in _execute_ddl
+    compiled = ddl.compile(
+               ^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 308, in compile
+    return self._compiler(dialect, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 76, in _compiler
+    return dialect.ddl_compiler(dialect, self, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 886, in __init__
+    self.string = self.process(self.statement, **compile_kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 932, in process
+    return obj._compiler_dispatch(self, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/visitors.py", line 141, in _compiler_dispatch
+    return meth(self, **kw)  # type: ignore  # noqa: E501
+           ^^^^^^^^^^^^^^^^
+  File "/Users/aanshgoel/datasc/Python/contractManagement/contractmanagement/.venv/lib/python3.12/site-packages/sqlalchemy/sql/compiler.py", line 6726, in visit_create_table
+    raise exc.CompileError(
+sqlalchemy.exc.CompileError: (in table 'contracts', column 'tags'): Compiler <sqlalchemy.dialects.mysql.base.MySQLTypeCompiler object at 0x11233ebd0> can't render element of type ARRAY

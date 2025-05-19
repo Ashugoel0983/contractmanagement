@@ -1,8 +1,14 @@
 from datetime import datetime
+import json
 from app import db
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import JSON, ARRAY
+# Import JSON type that works across different databases
+try:
+    from sqlalchemy.dialects.postgresql import ARRAY
+    HAS_POSTGRES = True
+except ImportError:
+    HAS_POSTGRES = False
 import enum
 
 
@@ -100,7 +106,27 @@ class Contract(db.Model):
     owner_id = Column(Integer, ForeignKey('users.id'))
     file_path = Column(String(512))
     extracted_text = Column(Text)
-    tags = Column(ARRAY(String))
+    # Store tags as JSON string for compatibility across different databases
+    tags_json = Column(Text)
+    
+    @property
+    def tags(self):
+        """Get tags as a list"""
+        if self.tags_json:
+            try:
+                return json.loads(self.tags_json)
+            except:
+                return []
+        return []
+    
+    @tags.setter
+    def tags(self, value):
+        """Set tags from a list"""
+        if value is None:
+            self.tags_json = None
+        else:
+            self.tags_json = json.dumps(value)
+            
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
