@@ -48,6 +48,7 @@ with app.app_context():
     from api.notifications import notifications_bp
     from api.settings import settings_bp
     from api.search import search_bp
+    from api.auth import auth_bp
 
     # Register API blueprints
     app.register_blueprint(contracts_bp, url_prefix='/v1/contracts')
@@ -58,6 +59,7 @@ with app.app_context():
     app.register_blueprint(notifications_bp, url_prefix='/v1/notifications')
     app.register_blueprint(settings_bp, url_prefix='/v1/settings')
     app.register_blueprint(search_bp, url_prefix='/v1/contracts/search')
+    app.register_blueprint(auth_bp, url_prefix='/v1/auth')
 
     # Create all database tables
     db.create_all()

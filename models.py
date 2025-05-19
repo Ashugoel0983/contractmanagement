@@ -55,9 +55,10 @@ class User(db.Model):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    auth0_id = Column(String(128), unique=True, nullable=False)
+    auth0_id = Column(String(128), unique=True, nullable=True)  # Can be null for local auth
     email = Column(String(128), unique=True, nullable=False)
     name = Column(String(128))
+    password_hash = Column(String(256))  # Store hashed passwords
     role = Column(Enum(UserRole), default=UserRole.USER)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

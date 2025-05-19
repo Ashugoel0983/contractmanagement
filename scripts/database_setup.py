@@ -75,24 +75,33 @@ def seed_sample_users():
                 return True
             
             # Sample users data
+            from werkzeug.security import generate_password_hash
+            
+            # Create a common default password for testing
+            default_password = "password123"
+            password_hash = generate_password_hash(default_password)
+            
             users_data = [
                 {
                     "auth0_id": f"auth0|{uuid.uuid4()}",
                     "email": "admin@example.com",
                     "name": "Admin User",
-                    "role": UserRole.ADMIN
+                    "role": UserRole.ADMIN,
+                    "password_hash": password_hash
                 },
                 {
                     "auth0_id": f"auth0|{uuid.uuid4()}",
                     "email": "manager@example.com",
                     "name": "Manager User",
-                    "role": UserRole.MANAGER
+                    "role": UserRole.MANAGER,
+                    "password_hash": password_hash
                 },
                 {
                     "auth0_id": f"auth0|{uuid.uuid4()}",
                     "email": "user@example.com",
                     "name": "Regular User",
-                    "role": UserRole.USER
+                    "role": UserRole.USER,
+                    "password_hash": password_hash
                 }
             ]
             

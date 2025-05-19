@@ -55,21 +55,19 @@ def test_connection():
                 logger.error("✗ MySQL compatibility issue: tags_json field missing")
             
             # Create a test user
-            test_user = User(
-                auth0_id="test-auth0-id",
-                email="test@example.com",
-                name="Test User",
-                role="USER"
-            )
+            test_user = User()
+            test_user.auth0_id = "test-auth0-id"
+            test_user.email = "test@example.com"
+            test_user.name = "Test User"
+            test_user.role = UserRole.USER
             
             # Create a test contract with tags
-            test_contract = Contract(
-                contract_number="TEST-001",
-                title="Test Contract",
-                contract_type="SERVICE_AGREEMENT",
-                description="Test contract for database verification",
-                tags=["test", "verification", "mysql"]
-            )
+            test_contract = Contract()
+            test_contract.contract_number = "TEST-001"
+            test_contract.title = "Test Contract"
+            test_contract.contract_type = ContractType.SERVICE_AGREEMENT
+            test_contract.description = "Test contract for database verification"
+            test_contract.tags = ["test", "verification", "mysql"]
             
             # Add to session but don't commit to avoid changing the database
             db.session.add(test_user)
