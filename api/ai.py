@@ -1,144 +1,134 @@
-import os
 import logging
-import tempfile
 from flask import Blueprint, request, jsonify
-from werkzeug.utils import secure_filename
+from werkzeug.exceptions import BadRequest
+
+from models import Contract, ContractStatus
 from services.ocr_service import OCRService
 from services.ai_service import AIService
 from services.storage_service import StorageService
 from auth import requires_auth, requires_role
-from config import Config
 
 logger = logging.getLogger(__name__)
-
-ai_bp = Blueprint('ai', __name__)
 
 # Initialize services
 ocr_service = OCRService()
 ai_service = AIService()
 storage_service = StorageService()
 
-@ai_bp.route('/extract', methods=['POST'])
+# Create blueprint
+ai_bp = Blueprint('ai', __name__)
+
+
+@ai_bp.route('/extract-document', methods=['POST'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def extract_document():
     """
     Extract structured data from a document using OCR and AI
     """
     try:
         # Check if file was uploaded
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
-            
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
+        if 'document' not in request.files:
+            return jsonify({'error': 'No document provided'}), 400
         
-        # Get document type from form
+        document = request.files['document']
+        if not document.filename:
+            return jsonify({'error': 'No document selected'}), 400
+        
+        # Save the file
+        file_path = storage_service.save_file(
+            document,
+            prefix='temp',
+            allowed_extensions={'pdf', 'png', 'jpg', 'jpeg'}
+        )
+        
+        # Extract text from the document
+        extracted_text = ""
+        if file_path.lower().endswith('.pdf'):
+            extracted_text = ocr_service.extract_text_from_pdf(file_path)
+        else:
+            extracted_text = ocr_service.extract_text_from_image(file_path)
+        
+        # Process the document type
         doc_type = request.form.get('doc_type', 'contract')
         
-        # Check if file type is allowed
-        filename = secure_filename(file.filename)
-        file_extension = os.path.splitext(filename)[1].lower()
+        # Use AI to extract structured data
+        extracted_data = ai_service.extract_contract_data(extracted_text, doc_type)
         
-        if file_extension not in ['.pdf', '.png', '.jpg', '.jpeg']:
-            return jsonify({'error': 'File type not allowed. Allowed types: .pdf, .png, .jpg, .jpeg'}), 400
+        # Clean up temporary file
+        storage_service.delete_file(file_path)
         
-        # Save the file to a temporary location
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            file.save(temp_file.name)
-            temp_file_path = temp_file.name
-        
-        try:
-            # Extract text using OCR
-            logger.info(f"Processing file: {filename}")
-            extracted_text = ocr_service.process_file(temp_file_path)
-            
-            # Extract structured data using AI
-            extracted_data = ai_service.extract_contract_data(extracted_text, doc_type)
-            
-            # Calculate confidence metrics
-            if doc_type == 'contract':
-                clauses = extracted_data.get('clauses', {})
-                clause_analysis = ai_service.analyze_clauses(clauses)
-                risk_score = ai_service.calculate_risk_score(extracted_data)
-                
-                result = {
-                    'extracted_data': extracted_data,
-                    'clause_analysis': clause_analysis,
-                    'risk_score': risk_score
-                }
-            else:
-                result = {
-                    'extracted_data': extracted_data
-                }
-            
-            logger.info(f"Successfully extracted data from {filename}")
-            return jsonify(result), 200
-            
-        finally:
-            # Clean up temporary file
-            os.unlink(temp_file_path)
-            
+        return jsonify({
+            'success': True,
+            'text': extracted_text[:1000] + "..." if len(extracted_text) > 1000 else extracted_text,
+            'data': extracted_data
+        }), 200
+    
     except Exception as e:
         logger.error(f"Error extracting document data: {str(e)}")
-        return jsonify({'error': f"Failed to extract document data: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
 
-@ai_bp.route('/analyze/clauses', methods=['POST'])
+
+@ai_bp.route('/analyze-clauses', methods=['POST'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def analyze_clauses():
     """
     Analyze contract clauses for quality and missing important clauses
     """
     try:
-        # Get JSON data
-        data = request.get_json()
+        # Get clauses from request
+        data = request.json
         if not data or 'clauses' not in data:
-            return jsonify({'error': 'No clause data provided'}), 400
+            return jsonify({'error': 'No clauses provided'}), 400
         
-        # Analyze clauses using AI
         clauses = data['clauses']
+        if not isinstance(clauses, dict):
+            return jsonify({'error': 'Clauses must be provided as a dictionary'}), 400
+        
+        # Use AI to analyze clauses
         analysis = ai_service.analyze_clauses(clauses)
         
-        logger.info("Successfully analyzed contract clauses")
-        return jsonify(analysis), 200
-        
+        return jsonify({
+            'success': True,
+            'analysis': analysis
+        }), 200
+    
     except Exception as e:
         logger.error(f"Error analyzing clauses: {str(e)}")
-        return jsonify({'error': f"Failed to analyze clauses: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
 
-@ai_bp.route('/analyze/risk', methods=['POST'])
+
+@ai_bp.route('/analyze-risk', methods=['POST'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def analyze_risk():
     """
     Calculate risk score for a contract based on extracted data
     """
     try:
-        # Get JSON data
-        data = request.get_json()
-        if not data:
+        # Get contract data from request
+        data = request.json
+        if not data or 'contract_data' not in data:
             return jsonify({'error': 'No contract data provided'}), 400
         
-        # Calculate risk score using AI
-        risk_score = ai_service.calculate_risk_score(data)
+        contract_data = data['contract_data']
         
-        # Determine risk level
-        risk_level = "low"
-        if risk_score > 70:
-            risk_level = "high"
-        elif risk_score > 40:
-            risk_level = "medium"
+        # Use AI to calculate risk score
+        risk_assessment = ai_service.calculate_risk_score(contract_data)
         
-        result = {
-            'risk_score': risk_score,
-            'risk_level': risk_level
-        }
+        # If contract ID is provided, update its status if high risk
+        contract_id = data.get('contract_id')
+        if contract_id and risk_assessment.get('risk_level') == 'high':
+            from app import db
+            contract = Contract.query.get(contract_id)
+            if contract:
+                contract.status = ContractStatus.RISK_FLAGGED
+                db.session.commit()
+                logger.info(f"Contract {contract_id} flagged as high risk")
         
-        logger.info("Successfully calculated contract risk score")
-        return jsonify(result), 200
-        
+        return jsonify({
+            'success': True,
+            'risk_assessment': risk_assessment
+        }), 200
+    
     except Exception as e:
         logger.error(f"Error analyzing risk: {str(e)}")
-        return jsonify({'error': f"Failed to analyze risk: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500

@@ -107,7 +107,7 @@ class Contract(db.Model):
     # Relationships
     owner = relationship("User", back_populates="contracts")
     parties = relationship("ContractParty", back_populates="contract", cascade="all, delete-orphan")
-    metadata = relationship("ContractMetadata", back_populates="contract", uselist=False, cascade="all, delete-orphan")
+    contract_metadata = relationship("ContractMetadata", back_populates="contract", uselist=False, cascade="all, delete-orphan")
     invoices = relationship("Invoice", back_populates="contract", cascade="all, delete-orphan")
     approvals = relationship("Approval", back_populates="contract", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="contract", cascade="all, delete-orphan")
@@ -123,8 +123,8 @@ class Contract(db.Model):
             "contract_type": self.contract_type.value,
             "status": self.status.value,
             "description": self.description,
-            "start_date": self.start_date.isoformat() if self.start_date else None,
-            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "start_date": self.start_date.isoformat() if hasattr(self.start_date, 'isoformat') else None,
+            "end_date": self.end_date.isoformat() if hasattr(self.end_date, 'isoformat') else None,
             "value": self.value,
             "currency": self.currency,
             "payment_terms": self.payment_terms,
@@ -194,7 +194,7 @@ class ContractMetadata(db.Model):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    contract = relationship("Contract", back_populates="metadata")
+    contract = relationship("Contract", back_populates="contract_metadata")
     
     def __repr__(self):
         return f"<ContractMetadata for contract {self.contract_id}>"
@@ -253,8 +253,8 @@ class Invoice(db.Model):
             "contract_title": self.contract.title if self.contract else None,
             "amount": self.amount,
             "currency": self.currency,
-            "due_date": self.due_date.isoformat() if self.due_date else None,
-            "issue_date": self.issue_date.isoformat() if self.issue_date else None,
+            "due_date": self.due_date.isoformat() if hasattr(self.due_date, 'isoformat') else None,
+            "issue_date": self.issue_date.isoformat() if hasattr(self.issue_date, 'isoformat') else None,
             "is_recurring": self.is_recurring,
             "frequency": self.frequency,
             "template_type": self.template_type,

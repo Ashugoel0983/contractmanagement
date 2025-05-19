@@ -3,7 +3,7 @@ import os
 from functools import wraps
 from werkzeug.exceptions import Unauthorized, Forbidden
 import requests
-from flask import request, jsonify, _request_ctx_stack
+from flask import request, jsonify, g
 from jose import jwt
 import six
 from config import Config
@@ -65,14 +65,15 @@ def requires_auth(f):
                     audience=API_AUDIENCE,
                     issuer=f"https://{AUTH0_DOMAIN}/"
                 )
-            except jwt.ExpiredSignatureError:
-                raise Unauthorized("Token expired")
-            except jwt.JWTClaimsError:
-                raise Unauthorized("Incorrect claims. Please check the audience and issuer")
-            except Exception:
-                raise Unauthorized("Unable to parse authentication token")
+            except Exception as e:
+                if "Expired token" in str(e):
+                    raise Unauthorized("Token expired")
+                elif "Invalid claim" in str(e):
+                    raise Unauthorized("Incorrect claims. Please check the audience and issuer")
+                else:
+                    raise Unauthorized(f"Unable to parse authentication token: {str(e)}")
             
-            _request_ctx_stack.top.current_user = payload
+            g.current_user = payload
             return f(*args, **kwargs)
         raise Unauthorized("Unable to find appropriate key")
     return decorated
@@ -85,11 +86,8 @@ def requires_role(role):
         def wrapper(*args, **kwargs):
             token = get_token_auth_header()
             try:
-                payload = jwt.decode(
-                    token,
-                    algorithms=ALGORITHMS,
-                    options={"verify_signature": False}
-                )
+                # Use get_unverified_claims to avoid signature verification
+                payload = jwt.get_unverified_claims(token)
             except Exception:
                 raise Unauthorized("Invalid token")
             
@@ -111,11 +109,8 @@ def get_user_info():
     """Get the current user information from the JWT token"""
     token = get_token_auth_header()
     try:
-        payload = jwt.decode(
-            token,
-            algorithms=ALGORITHMS,
-            options={"verify_signature": False}
-        )
+        # Use get_unverified_claims to avoid signature verification
+        payload = jwt.get_unverified_claims(token)
         return payload
     except Exception:
         raise Unauthorized("Invalid token")

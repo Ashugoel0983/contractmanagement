@@ -1,50 +1,61 @@
 import os
 import logging
-import tempfile
+import uuid
 from datetime import datetime
-from flask import Blueprint, request, jsonify, send_file
-from werkzeug.utils import secure_filename
+from flask import Blueprint, request, jsonify, current_app, g
+from werkzeug.exceptions import NotFound, BadRequest
+from sqlalchemy import desc, func
+
 from app import db
-from models import Contract, ContractParty, ContractMetadata, ContractStatus, ContractType, Invoice, User, UserRole
+from models import Contract, ContractParty, ContractMetadata, ContractType, ContractStatus, User
 from services.ocr_service import OCRService
 from services.ai_service import AIService
 from services.storage_service import StorageService
-from services.notification_service import NotificationService
 from auth import requires_auth, requires_role, get_user_info
-from utils.validators import validate_contract_data
-from utils.helpers import generate_contract_number, parse_date
 
 logger = logging.getLogger(__name__)
-
-contracts_bp = Blueprint('contracts', __name__)
 
 # Initialize services
 ocr_service = OCRService()
 ai_service = AIService()
 storage_service = StorageService()
-notification_service = NotificationService()
+
+# Create blueprint
+contracts_bp = Blueprint('contracts', __name__)
+
 
 @contracts_bp.route('', methods=['GET'])
 @requires_auth
 def get_contracts():
-    """Get all contracts with optional filtering"""
+    """
+    Get all contracts with optional filtering
+    Query params:
+        status: Filter by contract status
+        type: Filter by contract type
+        owner_id: Filter by owner ID
+        search: Search in title and description
+        tags: Filter by tags (comma-separated)
+        sort_by: Field to sort by
+        sort_order: asc or desc
+        page: Page number (default: 1)
+        per_page: Items per page (default: 20)
+    """
     try:
-        # Parse query parameters
+        # Get query parameters
         status = request.args.get('status')
-        contract_type = request.args.get('contract_type')
+        contract_type = request.args.get('type')
         owner_id = request.args.get('owner_id')
-        search = request.args.get('search')
-        limit = int(request.args.get('limit', 50))
-        offset = int(request.args.get('offset', 0))
+        search_query = request.args.get('search')
+        tags = request.args.get('tags')
+        sort_by = request.args.get('sort_by', 'created_at')
+        sort_order = request.args.get('sort_order', 'desc')
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
         
-        # Get user info for authorization check
-        user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
-        
-        # Build query
+        # Start query
         query = Contract.query
         
-        # Apply filters if provided
+        # Apply filters
         if status:
             query = query.filter(Contract.status == ContractStatus(status))
         
@@ -54,220 +65,222 @@ def get_contracts():
         if owner_id:
             query = query.filter(Contract.owner_id == owner_id)
         
-        if search:
-            search_term = f"%{search}%"
+        if search_query:
+            search_term = f"%{search_query}%"
             query = query.filter(
-                db.or_(
-                    Contract.title.ilike(search_term),
-                    Contract.description.ilike(search_term),
-                    Contract.contract_number.ilike(search_term)
-                )
+                (Contract.title.ilike(search_term)) | 
+                (Contract.description.ilike(search_term))
             )
         
-        # Role-based access control
-        if user and user.role != UserRole.ADMIN:
-            # Non-admins can only see contracts they own
-            query = query.filter(Contract.owner_id == user.id)
+        if tags:
+            tag_list = tags.split(',')
+            for tag in tag_list:
+                query = query.filter(Contract.tags.contains([tag]))
         
-        # Get total count for pagination
-        total_count = query.count()
+        # Apply sorting
+        if sort_order == 'desc':
+            query = query.order_by(desc(getattr(Contract, sort_by)))
+        else:
+            query = query.order_by(getattr(Contract, sort_by))
         
         # Apply pagination
-        contracts = query.order_by(Contract.created_at.desc()).limit(limit).offset(offset).all()
+        pagination = query.paginate(page=page, per_page=per_page)
         
-        result = {
-            'contracts': [contract.to_dict() for contract in contracts],
+        # Prepare response
+        contracts = [contract.to_dict() for contract in pagination.items]
+        
+        response = {
+            'contracts': contracts,
             'pagination': {
-                'total': total_count,
-                'limit': limit,
-                'offset': offset
+                'total': pagination.total,
+                'pages': pagination.pages,
+                'page': page,
+                'per_page': per_page,
+                'has_next': pagination.has_next,
+                'has_prev': pagination.has_prev
             }
         }
         
-        return jsonify(result), 200
-        
+        return jsonify(response), 200
+    
     except Exception as e:
         logger.error(f"Error getting contracts: {str(e)}")
-        return jsonify({'error': f"Failed to get contracts: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('', methods=['POST'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def create_contract():
-    """Create a new contract"""
+    """
+    Create a new contract
+    """
     try:
-        # Check if file was uploaded
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
-            
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        # Get contract data from form
-        contract_data = {
-            'title': request.form.get('title'),
-            'contract_type': request.form.get('contract_type'),
-            'description': request.form.get('description'),
-            'start_date': request.form.get('start_date'),
-            'end_date': request.form.get('end_date'),
-            'value': request.form.get('value'),
-            'currency': request.form.get('currency', 'USD'),
-            'payment_terms': request.form.get('payment_terms'),
-            'tags': request.form.get('tags', '').split(',') if request.form.get('tags') else []
-        }
-        
-        # Validate contract data
-        validation_errors = validate_contract_data(contract_data)
-        if validation_errors:
-            return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
-        
         # Get user info
         user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
+        auth0_id = user_info.get('sub')
         
+        # Find the user
+        user = User.query.filter_by(auth0_id=auth0_id).first()
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
-        # Save the file
-        file_path = storage_service.save_file(file)
+        # Get request data
+        data = request.form.to_dict()
         
-        # Process the file with OCR
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            file.seek(0)
-            temp_file.write(file.read())
-            temp_file_path = temp_file.name
+        # Validate required fields
+        if not data.get('title'):
+            return jsonify({'error': 'Title is required'}), 400
         
-        try:
-            extracted_text = ocr_service.process_file(temp_file_path)
-        finally:
-            os.unlink(temp_file_path)
+        if not data.get('contract_type'):
+            return jsonify({'error': 'Contract type is required'}), 400
         
-        # Create the contract
+        # Process contract document if provided
+        file_path = None
+        extracted_text = None
+        if 'document' in request.files:
+            document = request.files['document']
+            if document.filename:
+                # Save the file
+                file_path = storage_service.save_file(
+                    document, 
+                    prefix='contracts',
+                    allowed_extensions={'pdf', 'png', 'jpg', 'jpeg'}
+                )
+                
+                # Extract text from the document
+                if file_path.lower().endswith('.pdf'):
+                    extracted_text = ocr_service.extract_text_from_pdf(file_path)
+                else:
+                    extracted_text = ocr_service.extract_text_from_image(file_path)
+        
+        # Generate contract number
+        contract_number = f"CNT-{uuid.uuid4().hex[:8].upper()}"
+        
+        # Parse dates
+        start_date = None
+        if data.get('start_date'):
+            start_date = datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
+        
+        end_date = None
+        if data.get('end_date'):
+            end_date = datetime.fromisoformat(data['end_date'].replace('Z', '+00:00'))
+        
+        # Parse tags
+        tags = None
+        if data.get('tags'):
+            tags = data['tags'].split(',')
+        
+        # Create contract
         contract = Contract(
-            contract_number=generate_contract_number(),
-            title=contract_data['title'],
-            contract_type=ContractType(contract_data['contract_type']),
+            contract_number=contract_number,
+            title=data['title'],
+            contract_type=ContractType(data['contract_type']),
             status=ContractStatus.DRAFT,
-            description=contract_data['description'],
-            start_date=parse_date(contract_data['start_date']),
-            end_date=parse_date(contract_data['end_date']),
-            value=float(contract_data['value']) if contract_data['value'] else None,
-            currency=contract_data['currency'],
-            payment_terms=contract_data['payment_terms'],
+            description=data.get('description'),
+            start_date=start_date,
+            end_date=end_date,
+            value=float(data['value']) if data.get('value') else None,
+            currency=data.get('currency', 'USD'),
+            payment_terms=data.get('payment_terms'),
             owner_id=user.id,
             file_path=file_path,
             extracted_text=extracted_text,
-            tags=contract_data['tags'],
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            tags=tags
         )
         
+        # Add to database
         db.session.add(contract)
         db.session.commit()
         
-        # Create contract metadata
-        metadata = ContractMetadata(
-            contract_id=contract.id,
-            invoice_required=request.form.get('invoice_required') == 'true',
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
+        # Create party information if provided
+        if data.get('party_name'):
+            party = ContractParty(
+                contract_id=contract.id,
+                party_type=data.get('party_type', 'client'),
+                legal_name=data['party_name'],
+                address=data.get('party_address'),
+                contact_person=data.get('party_contact'),
+                email=data.get('party_email'),
+                phone=data.get('party_phone')
+            )
+            db.session.add(party)
+            db.session.commit()
         
-        db.session.add(metadata)
-        db.session.commit()
-        
-        logger.info(f"Created contract {contract.id}: {contract.title}")
         return jsonify(contract.to_dict()), 201
-        
+    
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error creating contract: {str(e)}")
-        return jsonify({'error': f"Failed to create contract: {str(e)}"}), 500
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('/<int:contract_id>', methods=['GET'])
 @requires_auth
 def get_contract(contract_id):
-    """Get a contract by ID"""
+    """
+    Get a contract by ID
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
-        
-        # Get user info for authorization check
-        user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
-        
-        # Role-based access control
-        if user and user.role != UserRole.ADMIN and contract.owner_id != user.id:
-            return jsonify({'error': 'Unauthorized access to contract'}), 403
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
         # Get contract metadata
-        metadata = ContractMetadata.query.filter_by(contract_id=contract_id).first()
+        contract_data = contract.to_dict()
         
-        # Get contract parties
-        parties = ContractParty.query.filter_by(contract_id=contract_id).all()
+        # Add parties and metadata
+        if contract.parties:
+            contract_data['parties'] = [party.to_dict() for party in contract.parties]
         
-        # Get invoices
-        invoices = Invoice.query.filter_by(contract_id=contract_id).order_by(Invoice.created_at.desc()).all()
+        if contract.contract_metadata:
+            contract_data['metadata'] = contract.contract_metadata.to_dict()
         
-        result = contract.to_dict()
-        result['metadata'] = metadata.to_dict() if metadata else {}
-        result['parties'] = [party.to_dict() for party in parties]
-        result['invoices'] = [invoice.to_dict() for invoice in invoices]
-        
-        return jsonify(result), 200
-        
+        return jsonify(contract_data), 200
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
         logger.error(f"Error getting contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to get contract: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('/<int:contract_id>', methods=['PUT'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def update_contract(contract_id):
-    """Update a contract by ID"""
+    """
+    Update a contract by ID
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
-        # Get JSON data
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
+        # Get request data
+        data = request.form.to_dict()
         
-        # Validate contract data
-        validation_errors = validate_contract_data(data)
-        if validation_errors:
-            return jsonify({'error': 'Validation failed', 'details': validation_errors}), 400
-        
-        # Get user info for authorization check
-        user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
-        
-        # Role-based access control
-        if user.role != UserRole.ADMIN and contract.owner_id != user.id:
-            return jsonify({'error': 'Unauthorized to update this contract'}), 403
-        
-        # Update contract fields
+        # Update contract fields if provided
         if 'title' in data:
             contract.title = data['title']
         
         if 'contract_type' in data:
             contract.contract_type = ContractType(data['contract_type'])
         
+        if 'status' in data:
+            contract.status = ContractStatus(data['status'])
+        
         if 'description' in data:
             contract.description = data['description']
         
         if 'start_date' in data:
-            contract.start_date = parse_date(data['start_date'])
+            contract.start_date = datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
         
         if 'end_date' in data:
-            contract.end_date = parse_date(data['end_date'])
+            contract.end_date = datetime.fromisoformat(data['end_date'].replace('Z', '+00:00'))
         
         if 'value' in data:
-            contract.value = float(data['value']) if data['value'] else None
+            contract.value = float(data['value'])
         
         if 'currency' in data:
             contract.currency = data['currency']
@@ -275,339 +288,379 @@ def update_contract(contract_id):
         if 'payment_terms' in data:
             contract.payment_terms = data['payment_terms']
         
-        if 'tags' in data:
-            contract.tags = data['tags']
+        if 'tags' in data and data['tags']:
+            contract.tags = data['tags'].split(',')
         
-        if 'status' in data:
-            contract.status = ContractStatus(data['status'])
-        
-        contract.updated_at = datetime.utcnow()
-        
-        # Update metadata if provided
-        if 'metadata' in data:
-            metadata = ContractMetadata.query.filter_by(contract_id=contract_id).first()
-            if metadata:
-                # Update existing metadata fields
-                if 'invoice_required' in data['metadata']:
-                    metadata.invoice_required = data['metadata']['invoice_required']
+        # Process contract document if provided
+        if 'document' in request.files:
+            document = request.files['document']
+            if document.filename:
+                # Delete old file if exists
+                if contract.file_path:
+                    storage_service.delete_file(contract.file_path)
                 
-                if 'jurisdiction' in data['metadata']:
-                    metadata.jurisdiction = data['metadata']['jurisdiction']
-                
-                if 'governing_law' in data['metadata']:
-                    metadata.governing_law = data['metadata']['governing_law']
-                
-                if 'dispute_resolution' in data['metadata']:
-                    metadata.dispute_resolution = data['metadata']['dispute_resolution']
-                
-                if 'termination_clause' in data['metadata']:
-                    metadata.termination_clause = data['metadata']['termination_clause']
-                
-                if 'confidentiality_clause' in data['metadata']:
-                    metadata.confidentiality_clause = data['metadata']['confidentiality_clause']
-                
-                if 'limitation_of_liability' in data['metadata']:
-                    metadata.limitation_of_liability = data['metadata']['limitation_of_liability']
-                
-                if 'force_majeure' in data['metadata']:
-                    metadata.force_majeure = data['metadata']['force_majeure']
-                
-                if 'indemnification' in data['metadata']:
-                    metadata.indemnification = data['metadata']['indemnification']
-                
-                metadata.updated_at = datetime.utcnow()
-            else:
-                # Create new metadata if it doesn't exist
-                metadata = ContractMetadata(
-                    contract_id=contract_id,
-                    invoice_required=data['metadata'].get('invoice_required', False),
-                    jurisdiction=data['metadata'].get('jurisdiction'),
-                    governing_law=data['metadata'].get('governing_law'),
-                    dispute_resolution=data['metadata'].get('dispute_resolution'),
-                    termination_clause=data['metadata'].get('termination_clause'),
-                    confidentiality_clause=data['metadata'].get('confidentiality_clause'),
-                    limitation_of_liability=data['metadata'].get('limitation_of_liability'),
-                    force_majeure=data['metadata'].get('force_majeure'),
-                    indemnification=data['metadata'].get('indemnification'),
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
+                # Save the new file
+                file_path = storage_service.save_file(
+                    document, 
+                    prefix='contracts',
+                    allowed_extensions={'pdf', 'png', 'jpg', 'jpeg'}
                 )
-                db.session.add(metadata)
+                
+                # Extract text from the document
+                if file_path.lower().endswith('.pdf'):
+                    extracted_text = ocr_service.extract_text_from_pdf(file_path)
+                else:
+                    extracted_text = ocr_service.extract_text_from_image(file_path)
+                
+                contract.file_path = file_path
+                contract.extracted_text = extracted_text
         
-        # Update parties if provided
-        if 'parties' in data:
-            # Delete existing parties
-            ContractParty.query.filter_by(contract_id=contract_id).delete()
-            
-            # Add new parties
-            for party_data in data['parties']:
-                party = ContractParty(
-                    contract_id=contract_id,
-                    party_type=party_data.get('party_type'),
-                    legal_name=party_data.get('legal_name'),
-                    address=party_data.get('address'),
-                    contact_person=party_data.get('contact_person'),
-                    email=party_data.get('email'),
-                    phone=party_data.get('phone'),
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
-                )
-                db.session.add(party)
-        
+        # Update the contract
         db.session.commit()
-        logger.info(f"Updated contract {contract_id}")
         
         return jsonify(contract.to_dict()), 200
-        
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error updating contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to update contract: {str(e)}"}), 500
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('/<int:contract_id>', methods=['DELETE'])
 @requires_auth
-@requires_role(['admin'])
 def delete_contract(contract_id):
-    """Delete a contract by ID"""
+    """
+    Delete a contract by ID
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
-        # Check if contract has invoices
-        invoices = Invoice.query.filter_by(contract_id=contract_id).first()
-        if invoices:
-            return jsonify({'error': 'Cannot delete contract with associated invoices'}), 400
+        # Check if the contract has recurring invoices
+        has_recurring_invoices = any(invoice.is_recurring for invoice in contract.invoices)
+        if has_recurring_invoices:
+            return jsonify({
+                'error': 'Cannot delete a contract with recurring invoices', 
+                'message': 'Please cancel all recurring invoices before deleting this contract'
+            }), 400
         
-        # Delete the contract file
+        # Delete contract file if exists
         if contract.file_path:
             storage_service.delete_file(contract.file_path)
         
-        # Delete the contract
+        # Delete contract from database (relationships will cascade)
         db.session.delete(contract)
         db.session.commit()
         
-        logger.info(f"Deleted contract {contract_id}")
-        return jsonify({'message': 'Contract deleted successfully'}), 200
-        
+        return jsonify({'message': f'Contract {contract_id} successfully deleted'}), 200
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error deleting contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to delete contract: {str(e)}"}), 500
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('/<int:contract_id>/extract', methods=['POST'])
 @requires_auth
-@requires_role(['admin', 'manager'])
 def extract_contract_data(contract_id):
-    """Extract data from a contract using AI"""
+    """
+    Extract data from a contract using AI
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
         if not contract.extracted_text:
             return jsonify({'error': 'No extracted text available for this contract'}), 400
         
-        # Extract data from the contract text using AI
+        # Use AI to extract structured data
         extracted_data = ai_service.extract_contract_data(contract.extracted_text)
         
-        # Calculate risk score
-        risk_score = ai_service.calculate_risk_score(extracted_data)
-        
-        # Update contract with extracted data
-        if extracted_data.get('contract_title'):
-            contract.title = extracted_data['contract_title']
-        
-        if extracted_data.get('contract_type'):
-            try:
-                contract.contract_type = ContractType(extracted_data['contract_type'])
-            except ValueError:
-                # Use default if type is not recognized
-                pass
-        
-        if extracted_data.get('start_date'):
-            contract.start_date = parse_date(extracted_data['start_date'])
-        
-        if extracted_data.get('end_date'):
-            contract.end_date = parse_date(extracted_data['end_date'])
-        
-        if extracted_data.get('total_value'):
-            contract.value = extracted_data['total_value']
-        
-        if extracted_data.get('payment_terms'):
-            contract.payment_terms = extracted_data['payment_terms']
-        
-        # Update contract metadata
-        metadata = ContractMetadata.query.filter_by(contract_id=contract_id).first()
+        # Create or update contract metadata
+        metadata = contract.contract_metadata
         if not metadata:
-            metadata = ContractMetadata(
-                contract_id=contract_id,
-                created_at=datetime.utcnow()
-            )
+            metadata = ContractMetadata(contract_id=contract.id)
             db.session.add(metadata)
         
-        # Add clauses and risk flags to metadata
-        if extracted_data.get('clauses'):
-            metadata.termination_clause = extracted_data['clauses'].get('termination')
-            metadata.confidentiality_clause = extracted_data['clauses'].get('confidentiality')
-            metadata.limitation_of_liability = extracted_data['clauses'].get('limitation_of_liability')
-            metadata.force_majeure = extracted_data['clauses'].get('force_majeure')
-            metadata.indemnification = extracted_data['clauses'].get('indemnification')
-            
-            if extracted_data['clauses'].get('jurisdiction'):
-                metadata.jurisdiction = extracted_data['clauses']['jurisdiction']
-            
-            if extracted_data['clauses'].get('governing_law'):
-                metadata.governing_law = extracted_data['clauses']['governing_law']
+        # Update metadata fields
+        if 'jurisdiction' in extracted_data:
+            metadata.jurisdiction = extracted_data.get('jurisdiction')
         
-        # Add risk flags
-        if extracted_data.get('risk_flags'):
-            metadata.risk_flags = {'flags': extracted_data['risk_flags']}
-            
-            # If high risk, update contract status
-            if risk_score > 70:
-                contract.status = ContractStatus.RISK_FLAGGED
+        if 'governing_law' in extracted_data:
+            metadata.governing_law = extracted_data.get('governing_law')
         
-        metadata.ai_confidence_score = risk_score / 100.0  # Convert to 0-1 scale
-        metadata.updated_at = datetime.utcnow()
+        if 'termination_clause' in extracted_data:
+            metadata.termination_clause = extracted_data.get('termination_clause')
         
-        # Add parties if found
-        if extracted_data.get('parties'):
-            # Clear existing parties
-            ContractParty.query.filter_by(contract_id=contract_id).delete()
-            
-            for i, party_name in enumerate(extracted_data['parties']):
-                party = ContractParty(
-                    contract_id=contract_id,
-                    party_type='our_company' if i == 0 else 'counterparty',
-                    legal_name=party_name,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
-                )
-                db.session.add(party)
+        if 'confidentiality_clause' in extracted_data:
+            metadata.confidentiality_clause = extracted_data.get('confidentiality_clause')
         
-        contract.updated_at = datetime.utcnow()
+        if 'limitation_of_liability' in extracted_data:
+            metadata.limitation_of_liability = extracted_data.get('limitation_of_liability')
+        
+        if 'force_majeure' in extracted_data:
+            metadata.force_majeure = extracted_data.get('force_majeure')
+        
+        if 'indemnification' in extracted_data:
+            metadata.indemnification = extracted_data.get('indemnification')
+        
+        # Update contract fields
+        if 'title' in extracted_data and extracted_data.get('title'):
+            contract.title = extracted_data.get('title')
+        
+        if 'contract_type' in extracted_data and extracted_data.get('contract_type'):
+            # Try to match with enum values
+            contract_type = extracted_data.get('contract_type')
+            for ct in ContractType:
+                if contract_type.lower() in ct.value.lower():
+                    contract.contract_type = ct
+                    break
+        
+        if 'start_date' in extracted_data and extracted_data.get('start_date'):
+            try:
+                contract.start_date = datetime.fromisoformat(extracted_data.get('start_date'))
+            except ValueError:
+                pass
+        
+        if 'end_date' in extracted_data and extracted_data.get('end_date'):
+            try:
+                contract.end_date = datetime.fromisoformat(extracted_data.get('end_date'))
+            except ValueError:
+                pass
+        
+        if 'payment_details' in extracted_data:
+            payment_details = extracted_data.get('payment_details')
+            if payment_details and isinstance(payment_details, dict):
+                if 'amount' in payment_details:
+                    try:
+                        contract.value = float(payment_details.get('amount'))
+                    except ValueError:
+                        pass
+                
+                if 'currency' in payment_details:
+                    contract.currency = payment_details.get('currency')
+        
+        if 'payment_terms' in extracted_data:
+            contract.payment_terms = extracted_data.get('payment_terms')
+        
+        # Save changes
         db.session.commit()
         
-        logger.info(f"Extracted data for contract {contract_id}")
+        # Perform risk analysis
+        risk_assessment = ai_service.calculate_risk_score(extracted_data)
         
-        # Return the extracted data and confidence score
-        result = {
-            'extracted_data': extracted_data,
-            'confidence_score': metadata.ai_confidence_score,
-            'risk_score': risk_score
+        # Update metadata with risk assessment
+        metadata.ai_confidence_score = risk_assessment.get('risk_score', 0) / 100
+        metadata.risk_flags = {
+            'risk_level': risk_assessment.get('risk_level', 'unknown'),
+            'risk_factors': risk_assessment.get('risk_factors', []),
+            'recommendations': risk_assessment.get('recommendations', [])
         }
         
-        return jsonify(result), 200
+        # Flag contract if high risk
+        if risk_assessment.get('risk_level') == 'high':
+            contract.status = ContractStatus.RISK_FLAGGED
         
+        # Add parties if extracted
+        if 'parties' in extracted_data and extracted_data.get('parties'):
+            parties = extracted_data.get('parties')
+            for party_data in parties:
+                # Skip if no name
+                if not party_data.get('name'):
+                    continue
+                
+                # Check if party already exists
+                existing_party = ContractParty.query.filter_by(
+                    contract_id=contract.id,
+                    legal_name=party_data.get('name')
+                ).first()
+                
+                if not existing_party:
+                    party = ContractParty(
+                        contract_id=contract.id,
+                        party_type=party_data.get('role', 'external'),
+                        legal_name=party_data.get('name'),
+                        address=party_data.get('address')
+                    )
+                    db.session.add(party)
+        
+        # Save all changes
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Contract data extracted successfully',
+            'data': extracted_data,
+            'risk_assessment': risk_assessment
+        }), 200
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
+        logger.error(f"Error extracting contract data for {contract_id}: {str(e)}")
         db.session.rollback()
-        logger.error(f"Error extracting data for contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to extract contract data: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
 
-@contracts_bp.route('/<int:contract_id>/extracted', methods=['GET'])
+
+@contracts_bp.route('/<int:contract_id>/data', methods=['GET'])
 @requires_auth
 def get_extracted_data(contract_id):
-    """Get extracted structured data for a contract"""
+    """
+    Get extracted structured data for a contract
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
-        # Get user info for authorization check
-        user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
-        
-        # Role-based access control
-        if user.role != UserRole.ADMIN and contract.owner_id != user.id:
-            return jsonify({'error': 'Unauthorized access to contract'}), 403
-        
-        # Get contract metadata
-        metadata = ContractMetadata.query.filter_by(contract_id=contract_id).first()
+        metadata = contract.contract_metadata
         if not metadata:
-            return jsonify({'error': 'Contract metadata not found'}), 404
+            return jsonify({'error': 'No metadata available for this contract'}), 404
         
-        # Get contract parties
-        parties = ContractParty.query.filter_by(contract_id=contract_id).all()
-        
-        # Construct response
-        result = {
-            'contract_data': {
-                'contract_title': contract.title,
-                'contract_type': contract.contract_type.value,
-                'start_date': contract.start_date.isoformat() if contract.start_date else None,
-                'end_date': contract.end_date.isoformat() if contract.end_date else None,
-                'total_value': contract.value,
-                'payment_terms': contract.payment_terms,
-                'parties': [party.legal_name for party in parties],
-            },
-            'clauses': {
-                'termination': metadata.termination_clause,
-                'confidentiality': metadata.confidentiality_clause,
-                'limitation_of_liability': metadata.limitation_of_liability,
-                'force_majeure': metadata.force_majeure,
-                'indemnification': metadata.indemnification,
-                'jurisdiction': metadata.jurisdiction,
-                'governing_law': metadata.governing_law
-            },
-            'risk_flags': metadata.risk_flags.get('flags', []) if metadata.risk_flags else [],
-            'confidence_score': metadata.ai_confidence_score
+        # Compile extracted data
+        extracted_data = {
+            'contract_id': contract.id,
+            'contract_number': contract.contract_number,
+            'title': contract.title,
+            'contract_type': contract.contract_type.value,
+            'start_date': contract.start_date.isoformat() if hasattr(contract.start_date, 'isoformat') else None,
+            'end_date': contract.end_date.isoformat() if hasattr(contract.end_date, 'isoformat') else None,
+            'value': contract.value,
+            'currency': contract.currency,
+            'payment_terms': contract.payment_terms,
+            'metadata': metadata.to_dict() if metadata else None,
+            'parties': [party.to_dict() for party in contract.parties] if contract.parties else []
         }
         
-        return jsonify(result), 200
-        
+        return jsonify(extracted_data), 200
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
         logger.error(f"Error getting extracted data for contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to get extracted data: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
+
 
 @contracts_bp.route('/<int:contract_id>/document', methods=['GET'])
 @requires_auth
 def get_contract_document(contract_id):
-    """Get the original contract document"""
+    """
+    Get the original contract document
+    """
     try:
         contract = Contract.query.get(contract_id)
+        
         if not contract:
-            return jsonify({'error': 'Contract not found'}), 404
+            raise NotFound(f"Contract with ID {contract_id} not found")
         
         if not contract.file_path:
             return jsonify({'error': 'No document available for this contract'}), 404
         
-        # Get user info for authorization check
-        user_info = get_user_info()
-        user = User.query.filter_by(auth0_id=user_info.get('sub')).first()
-        
-        # Role-based access control
-        if user.role != UserRole.ADMIN and contract.owner_id != user.id:
-            return jsonify({'error': 'Unauthorized access to contract document'}), 403
-        
         # Get the file
-        try:
-            file_content = storage_service.get_file(contract.file_path)
-            
-            # Create a temporary file
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                temp_file.write(file_content)
-                temp_file_path = temp_file.name
-            
-            # Get the original filename
-            original_filename = os.path.basename(contract.file_path)
-            
-            # Send the file
-            return send_file(
-                temp_file_path,
-                as_attachment=True,
-                download_name=original_filename,
-                mimetype='application/pdf'  # Assuming PDF, adjust as needed
-            )
-            
-        finally:
-            # Clean up the temporary file
-            try:
-                if temp_file_path:
-                    os.unlink(temp_file_path)
-            except Exception:
-                pass
+        file_content = storage_service.get_file(contract.file_path)
         
+        # Determine file type
+        file_ext = os.path.splitext(contract.file_path)[1].lower()
+        if file_ext == '.pdf':
+            mime_type = 'application/pdf'
+        elif file_ext in ['.png', '.jpg', '.jpeg']:
+            mime_type = f'image/{file_ext[1:]}'
+        else:
+            mime_type = 'application/octet-stream'
+        
+        # Create response with file content
+        from flask import send_file
+        from io import BytesIO
+        
+        return send_file(
+            BytesIO(file_content),
+            mimetype=mime_type,
+            as_attachment=True,
+            download_name=f"contract_{contract.contract_number}{file_ext}"
+        )
+    
+    except NotFound as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
         logger.error(f"Error getting document for contract {contract_id}: {str(e)}")
-        return jsonify({'error': f"Failed to get contract document: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
+
+
+# Dashboard metrics
+@contracts_bp.route('/metrics', methods=['GET'])
+@requires_auth
+def get_contract_metrics():
+    """
+    Get contract metrics for dashboard
+    """
+    try:
+        # Get total contracts count
+        total_contracts = Contract.query.count()
+        
+        # Get active contracts count
+        active_contracts = Contract.query.filter_by(status=ContractStatus.ACTIVE).count()
+        
+        # Get contracts expiring in the next 30 days
+        today = datetime.utcnow()
+        expiring_soon = (
+            Contract.query
+            .filter(Contract.status == ContractStatus.ACTIVE)
+            .filter(Contract.end_date >= today)
+            .filter(Contract.end_date <= today.replace(day=today.day + 30))
+            .count()
+        )
+        
+        # Calculate renewal rate (contracts renewed / contracts expired) * 100
+        renewed_contracts = (
+            Contract.query
+            .filter(Contract.status == ContractStatus.ACTIVE)
+            .filter(Contract.end_date < today)
+            .count()
+        )
+        
+        expired_contracts = Contract.query.filter_by(status=ContractStatus.EXPIRED).count()
+        
+        renewal_rate = 0
+        if expired_contracts + renewed_contracts > 0:
+            renewal_rate = (renewed_contracts / (expired_contracts + renewed_contracts)) * 100
+        
+        # Get contracts by type
+        contracts_by_type = {}
+        for ct in ContractType:
+            count = Contract.query.filter_by(contract_type=ct).count()
+            contracts_by_type[ct.value] = count
+        
+        # Get contracts by status
+        contracts_by_status = {}
+        for cs in ContractStatus:
+            count = Contract.query.filter_by(status=cs).count()
+            contracts_by_status[cs.value] = count
+        
+        # Get total contract value
+        total_value = db.session.query(func.sum(Contract.value)).scalar() or 0
+        
+        # Return metrics
+        metrics = {
+            'total_contracts': total_contracts,
+            'active_contracts': active_contracts,
+            'expiring_soon': expiring_soon,
+            'renewal_rate': round(renewal_rate, 2),
+            'contracts_by_type': contracts_by_type,
+            'contracts_by_status': contracts_by_status,
+            'total_value': total_value
+        }
+        
+        return jsonify(metrics), 200
+    
+    except Exception as e:
+        logger.error(f"Error getting contract metrics: {str(e)}")
+        return jsonify({'error': str(e)}), 500
