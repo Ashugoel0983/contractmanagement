@@ -23,4 +23,6 @@ dependencies = [
     "pdf2image>=1.17.0",
     "six>=1.17.0",
     "pytesseract>=0.3.13",
+    "mysql-connector-python>=9.3.0",
+    "pymysql>=1.1.1",
 ]

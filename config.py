@@ -7,7 +7,18 @@ class Config:
     DEBUG = os.environ.get("FLASK_DEBUG", "True") == "True"
     
     # Database Configuration
-    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/contractdb")
+    # Support multiple database types based on environment variable
+    DB_TYPE = os.environ.get("DB_TYPE", "postgresql")  # Options: postgresql, mysql, sqlite
+    
+    # Default database URIs based on type
+    if DB_TYPE == "mysql":
+        DEFAULT_DB_URI = "mysql+pymysql://root:password@localhost:3306/contractdb"
+    elif DB_TYPE == "sqlite":
+        DEFAULT_DB_URI = "sqlite:///contracts.db"
+    else:  # Default to PostgreSQL
+        DEFAULT_DB_URI = "postgresql://postgres:postgres@localhost:5432/contractdb"
+    
+    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL", DEFAULT_DB_URI)
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_recycle": 300,
