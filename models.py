@@ -3,12 +3,6 @@ import json
 from app import db
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, Enum, JSON
 from sqlalchemy.orm import relationship
-# Import JSON type that works across different databases
-try:
-    from sqlalchemy.dialects.postgresql import ARRAY
-    HAS_POSTGRES = True
-except ImportError:
-    HAS_POSTGRES = False
 import enum
 
 
@@ -112,10 +106,10 @@ class Contract(db.Model):
     @property
     def tags(self):
         """Get tags as a list"""
-        if self.tags_json:
+        if self.tags_json is not None and isinstance(self.tags_json, str) and self.tags_json.strip():
             try:
                 return json.loads(self.tags_json)
-            except:
+            except Exception:
                 return []
         return []
     
